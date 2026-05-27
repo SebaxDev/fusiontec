@@ -79,6 +79,17 @@ def cargar_datos():
     df_r['Fecha_Parseada'] = df_r['Fecha_Parseada'].dt.tz_localize(tz_argentina)
     df_r['Horas_Transcurridas'] = (ahora - df_r['Fecha_Parseada']).dt.total_seconds() / 3600
 
+    # =====================================================
+    # LIMPIEZA DE DATOS (Evitar vacíos fantasmas)
+    # =====================================================
+    # Limpiar espacios en blanco en Estado y Técnico
+    df_r['Estado_Limpio'] = df_r['Estado'].astype(str).str.strip()
+    df_r['Tecnico_Limpio'] = df_r['Técnico'].astype(str).str.strip()
+    
+    # Reemplazar strings vacíos por nulos para filtrarlos fácilmente
+    import numpy as np
+    df_r['Tecnico_Limpio'] = df_r['Tecnico_Limpio'].replace('', np.nan)
+
     return df_r, df_usuarios
 
 # =========================================================
@@ -170,14 +181,13 @@ def generar_pdf(df, fecha_str):
     current_x = cols_x[current_col]
     current_y = margin_y
 
-    # Asegurar que la columna Técnico exista y no tenga nulos
-    df['Técnico'] = df['Técnico'].fillna('Sin Asignar')
-    tecnicos = sorted(df['Técnico'].unique())
+    # Usar la columna limpia para agrupar
+    df['Tecnico_Grupo'] = df['Tecnico_Limpio'].fillna('Sin Asignar')
+    tecnicos = sorted(df['Tecnico_Grupo'].unique())
 
     for tecnico in tecnicos:
-        df_tec = df[df['Técnico'] == tecnico]
+        df_tec = df[df['Tecnico_Grupo'] == tecnico]
 
-        # Salto de columna/página si no hay espacio para la cabecera del técnico
         if current_y > 260:
             current_col += 1
             if current_col > 2:
@@ -186,8 +196,6 @@ def generar_pdf(df, fecha_str):
             current_x = cols_x[current_col]
             current_y = margin_y
 
-        # Cabecera del técnico
-        # Solución para tildes/ñ en FPDF: codificar a latin-1 reemplazando lo que no se pueda
         tecnico_safe = tecnico.encode('latin-1', 'replace').decode('latin-1')
         
         pdf.set_xy(current_x, current_y)
@@ -196,7 +204,6 @@ def generar_pdf(df, fecha_str):
         pdf.line(current_x, current_y + 5, current_x + col_width, current_y + 5)
         current_y += 7
 
-        # Listado de reclamos
         for idx, row in df_tec.iterrows():
             if current_y > 270:
                 current_col += 1
@@ -206,7 +213,7 @@ def generar_pdf(df, fecha_str):
                 current_x = cols_x[current_col]
                 current_y = margin_y
 
-            status = "OK" if row['Estado'] == "Verificado" else "NO"
+            status = "OK" if row['Estado_Limpio'] == "Verificado" else "NO"
             nro_cliente_safe = str(row['Nº Cliente']).encode('latin-1', 'replace').decode('latin-1')
             text = f"{nro_cliente_safe} - {status}"
 
@@ -215,7 +222,6 @@ def generar_pdf(df, fecha_str):
             pdf.cell(col_width, 4, text, 0, 1)
             current_y += 5
 
-    # Devolver como bytes para Streamlit
     return bytes(pdf.output())
 
 # =========================================================
@@ -275,11 +281,18 @@ def main_app():
     df_reclamos, _ = cargar_datos()
     ws_reclamos, _, _ = init_google_sheets()
 
-    # Filtros base
-    estados_excluidos = ["Resuelto"]
-    mask_estado = ~df_reclamos['Estado'].isin(estados_excluidos)
-    df_activos = df_reclamos[mask_estado].copy()
-    df_activos['Técnico'] = df_activos['Técnico'].fillna('Sin Asignar')
+    # =====================================================
+    # FILTROS ESTRICTOS (LA SOLUCIÓN AL PROBLEMA)
+    # =====================================================
+    # 1. Solo estados "En curso" o "Verificado"
+    estados_validos = ["En curso", "Verificado"]
+    mask_estado_valido = df_reclamos['Estado_Limpio'].isin(estados_validos)
+    
+    # 2. Solo reclamos con Técnico asignado (no nulo/vacío)
+    mask_tecnico_asignado = df_reclamos['Tecnico_Limpio'].notna()
+    
+    # Aplicar ambos filtros
+    df_activos = df_reclamos[mask_estado_valido & mask_tecnico_asignado].copy()
 
     # =====================================================
     # VISTA ADMIN
@@ -293,7 +306,6 @@ def main_app():
             col_p1, col_p2 = st.columns(2)
             
             with col_p1:
-                # Botón Generar PDF
                 if st.button("📄 Generar PDF del Día", use_container_width=True):
                     with st.spinner("Generando PDF..."):
                         try:
@@ -309,12 +321,11 @@ def main_app():
                             st.error(f"Error al generar PDF: {e}")
             
             with col_p2:
-                # Botón Cierre Masivo
                 st.markdown("⚠️ Cerrar todos los **Verificados**")
                 confirmar_cierre = st.checkbox("Estoy seguro de cerrarlos")
                 if st.button("🔒 Cierre Masivo a Resuelto", disabled=not confirmar_cierre, use_container_width=True):
                     try:
-                        mask_verificados = df_reclamos['Estado'] == "Verificado"
+                        mask_verificados = df_reclamos['Estado_Limpio'] == "Verificado"
                         idxs = df_reclamos[mask_verificados].index.tolist()
                         
                         if not idxs:
@@ -340,24 +351,24 @@ def main_app():
         
         st.divider()
 
-        # --- FILTROS Y LISTADO ---
-        tecnicos_unicos = sorted(df_activos['Técnico'].unique().tolist())
+        # --- LISTADO ADMIN ---
+        if df_activos.empty:
+            st.success("🎉 No hay reclamos En curso/Verificados con técnico asignado.")
+            return
+
+        tecnicos_unicos = sorted(df_activos['Tecnico_Limpio'].unique())
         tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
         
         if tecnico_seleccionado == "Todos":
             df_filtrado = df_activos.copy()
         else:
-            df_filtrado = df_activos[df_activos['Técnico'] == tecnico_seleccionado].copy()
+            df_filtrado = df_activos[df_activos['Tecnico_Limpio'] == tecnico_seleccionado].copy()
 
         df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
         st.markdown(f"**Reclamos en curso/verificados: {len(df_filtrado)}**")
 
-        if df_filtrado.empty:
-            st.success("🎉 No hay reclamos pendientes para este filtro.")
-            return
-
         if tecnico_seleccionado == "Todos":
-            for tecnico, grupo in df_filtrado.groupby('Técnico'):
+            for tecnico, grupo in df_filtrado.groupby('Tecnico_Limpio'):
                 with st.expander(f"👷 {tecnico} ({len(grupo)} reclamos)"):
                     for idx, row in grupo.iterrows():
                         renderizar_tarjeta(row, df_reclamos, ws_reclamos)
@@ -369,9 +380,9 @@ def main_app():
     # VISTA TÉCNICO
     # =====================================================
     else:
-        # Para técnicos, solo ven los no verificados
-        estados_excluidos_tec = ["Resuelto", "Verificado"]
-        mask_estado_tec = ~df_reclamos['Estado'].isin(estados_excluidos_tec)
+        # El técnico solo ve los "En curso" asignados a él
+        estados_tec = ["En curso"]
+        mask_estado_tec = df_reclamos['Estado_Limpio'].isin(estados_tec)
         mask_tecnico = df_reclamos['Técnico'].str.contains(rol, case=False, na=False)
         mis_reclamos = df_reclamos[mask_tecnico & mask_estado_tec].copy()
 
