@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 import time
 from fpdf import FPDF
 import io
+import numpy as np
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -79,15 +80,9 @@ def cargar_datos():
     df_r['Fecha_Parseada'] = df_r['Fecha_Parseada'].dt.tz_localize(tz_argentina)
     df_r['Horas_Transcurridas'] = (ahora - df_r['Fecha_Parseada']).dt.total_seconds() / 3600
 
-    # =====================================================
-    # LIMPIEZA DE DATOS (Evitar vacíos fantasmas)
-    # =====================================================
-    # Limpiar espacios en blanco en Estado y Técnico
+    # Limpieza
     df_r['Estado_Limpio'] = df_r['Estado'].astype(str).str.strip()
     df_r['Tecnico_Limpio'] = df_r['Técnico'].astype(str).str.strip()
-    
-    # Reemplazar strings vacíos por nulos para filtrarlos fácilmente
-    import numpy as np
     df_r['Tecnico_Limpio'] = df_r['Tecnico_Limpio'].replace('', np.nan)
 
     return df_r, df_usuarios
@@ -99,13 +94,11 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
     sheet_row_num = row.name + 2 
     horas = row['Horas_Transcurridas']
 
-    # Badges
     badge = "🟢 Normal"
     if pd.notna(horas):
         if horas >= 48: badge = "🔴 +48 hs"
         elif horas >= 24: badge = "🟡 +24 hs"
 
-    # Datos
     direccion = str(row.get('Dirección', 'Sin dirección')) if pd.notna(row.get('Dirección')) else 'Sin dirección'
     telefono = str(row.get('Teléfono', 'Sin teléfono')) if pd.notna(row.get('Teléfono')) else 'Sin teléfono'
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
@@ -114,14 +107,12 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
     sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
     nombre_cliente = str(row.get('Nombre', ''))
 
-    # Tiempo
     if pd.notna(horas):
         if horas < 1: texto_tiempo = f"hace {int(horas * 60)} min"
         elif horas < 24: texto_tiempo = f"hace {int(horas)} hs"
         else: texto_tiempo = f"hace {int(horas / 24)} días"
     else: texto_tiempo = "Fecha inválida"
 
-    # Tarjeta
     with st.container(border=True):
         col1, col2 = st.columns([4, 1])
         with col1: st.markdown(f"### 🎫 Nº {row['Nº Cliente']} - {nombre_cliente}")
@@ -155,7 +146,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
                 st.error(f"Error al actualizar: {e}")
 
 # =========================================================
-# GENERADOR DE PDF
+# GENERADOR DE PDF (MEJORADO SIN CORTES)
 # =========================================================
 class PDFReporte(FPDF):
     def header(self):
@@ -176,36 +167,44 @@ def generar_pdf(df, fecha_str):
     col_width = 60
     margin_x = 10
     margin_y = 20
+    bottom_limit = 270 # Límite inferior de la página
     cols_x = [margin_x, margin_x + col_width + 5, margin_x + 2*(col_width + 5)]
+    
     current_col = 0
     current_x = cols_x[current_col]
     current_y = margin_y
 
-    # Usar la columna limpia para agrupar
     df['Tecnico_Grupo'] = df['Tecnico_Limpio'].fillna('Sin Asignar')
     tecnicos = sorted(df['Tecnico_Grupo'].unique())
 
     for tecnico in tecnicos:
         df_tec = df[df['Tecnico_Grupo'] == tecnico]
+        count_tec = len(df_tec)
+        
+        # Calcular la altura que ocupará este técnico (7mm cabecera + 5mm por cada reclamo)
+        block_height = 7 + (count_tec * 5)
 
-        if current_y > 260:
+        # Si el bloque NO entra en el espacio restante de la columna, paso a la siguiente
+        if current_y + block_height > bottom_limit:
             current_col += 1
-            if current_col > 2:
+            if current_col > 2: # Si no hay más columnas, nueva página
                 pdf.add_page()
                 current_col = 0
             current_x = cols_x[current_col]
             current_y = margin_y
 
+        # Imprimir Cabecera del Técnico (Con cantidad de trabajos)
         tecnico_safe = tecnico.encode('latin-1', 'replace').decode('latin-1')
-        
         pdf.set_xy(current_x, current_y)
         pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(col_width, 5, f"Técnico: {tecnico_safe}", 0, 1)
+        pdf.cell(col_width, 5, f"Técnico: {tecnico_safe} ({count_tec})", 0, 1)
         pdf.line(current_x, current_y + 5, current_x + col_width, current_y + 5)
         current_y += 7
 
+        # Imprimir Listado
         for idx, row in df_tec.iterrows():
-            if current_y > 270:
+            # Seguridad extra por si un técnico tiene muchísimos reclamos y supera una columna entera
+            if current_y > bottom_limit:
                 current_col += 1
                 if current_col > 2:
                     pdf.add_page()
@@ -266,11 +265,15 @@ def main_app():
     es_admin = st.session_state.get('es_admin', False)
     rol = st.session_state.rol
 
-    # Header
-    col1, col2 = st.columns([4, 1])
+    # Header con botones Actualizar y Salir
+    col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
         st.markdown(f"### 👷 {st.session_state.user_name} ({'Admin' if es_admin else 'Técnico'})")
     with col2:
+        if st.button("🔄"):
+            st.cache_data.clear()
+            st.rerun()
+    with col3:
         if st.button("🚪 Salir"):
             st.session_state.authenticated = False
             st.rerun()
@@ -281,17 +284,10 @@ def main_app():
     df_reclamos, _ = cargar_datos()
     ws_reclamos, _, _ = init_google_sheets()
 
-    # =====================================================
-    # FILTROS ESTRICTOS (LA SOLUCIÓN AL PROBLEMA)
-    # =====================================================
-    # 1. Solo estados "En curso" o "Verificado"
+    # Filtros estrictos
     estados_validos = ["En curso", "Verificado"]
     mask_estado_valido = df_reclamos['Estado_Limpio'].isin(estados_validos)
-    
-    # 2. Solo reclamos con Técnico asignado (no nulo/vacío)
     mask_tecnico_asignado = df_reclamos['Tecnico_Limpio'].notna()
-    
-    # Aplicar ambos filtros
     df_activos = df_reclamos[mask_estado_valido & mask_tecnico_asignado].copy()
 
     # =====================================================
@@ -300,7 +296,6 @@ def main_app():
     if es_admin:
         st.markdown("### 👑 Panel de Administración")
         
-        # --- HERRAMIENTAS ADMIN ---
         with st.container(border=True):
             st.markdown("**⚙️ Herramientas de Gestión**")
             col_p1, col_p2 = st.columns(2)
@@ -336,10 +331,7 @@ def main_app():
                             for i in idxs:
                                 sheet_row_num = i + 2
                                 cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
-                                updates.append({
-                                    "range": cell_range,
-                                    "values": [["Resuelto"]]
-                                })
+                                updates.append({"range": cell_range, "values": [["Resuelto"]]})
                             
                             ws_reclamos.batch_update(updates)
                             st.cache_data.clear()
@@ -351,7 +343,6 @@ def main_app():
         
         st.divider()
 
-        # --- LISTADO ADMIN ---
         if df_activos.empty:
             st.success("🎉 No hay reclamos En curso/Verificados con técnico asignado.")
             return
@@ -380,7 +371,6 @@ def main_app():
     # VISTA TÉCNICO
     # =====================================================
     else:
-        # El técnico solo ve los "En curso" asignados a él
         estados_tec = ["En curso"]
         mask_estado_tec = df_reclamos['Estado_Limpio'].isin(estados_tec)
         mask_tecnico = df_reclamos['Técnico'].str.contains(rol, case=False, na=False)
