@@ -173,23 +173,19 @@ def main_app():
         precinto = str(row.get('N° de Precinto', '')) if pd.notna(row.get('N° de Precinto')) and str(row.get('N° de Precinto', '')) != '*' else ''
         sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
 
-        # --- GENERACIÓN DE TARJETA HTML (CORREGIDA) ---
+        # --- GENERACIÓN DE TARJETA HTML (Versión Segura) ---
         detalles_html = f"<p style='margin: 2px 0;'><b>📝 Detalles:</b> <i>{detalles}</i></p>" if detalles else ""
         precinto_html = f"<p style='margin: 2px 0;'><b>🔒 Precinto:</b> {precinto}</p>" if precinto else ""
         
-        # Botón de Mapa o Botón Deshabilitado visual
-        maps_html = ""
+        # Ubicación: Volvemos al texto simple que no falla
         if pd.notna(row.get('lat')) and pd.notna(row.get('lon')):
             lat = row['lat']
             lon = row['lon']
             maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}"
-            # Botón Activo Azul
-            maps_html = f"<a href='{maps_url}' target='_blank' style='display: inline-block; margin-top: 10px; padding: 10px 15px; background-color: #0d47a1; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; text-align: center;'>📍 Navegar al Cliente</a>"
+            maps_html = f"<p style='margin: 5px 0;'><a href='{maps_url}' target='_blank'>📍 Navegar al Cliente</a></p>"
         else:
-            # Botón Inactivo Gris (Diseño consistente)
-            maps_html = "<div style='display: inline-block; margin-top: 10px; padding: 10px 15px; background-color: #e0e0e0; color: #757575; border-radius: 5px; font-weight: bold; text-align: center; cursor: not-allowed;'>❌ Sin ubicación en mapa</div>"
+            maps_html = "<p style='margin: 5px 0; color: #888;'>❌ Sin ubicación en mapa</p>"
 
-        # Agregué overflow: auto; al div principal para forzar el fondo y que no se desborde el contenido
         st.markdown(f"""
         <div style="background-color: {color_fondo}; padding: 15px; border-radius: 10px; border: 2px solid {color_borde}; margin-bottom: 5px; overflow: auto;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
