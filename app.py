@@ -61,17 +61,29 @@ def cargar_datos():
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
 
-    # Clientes
-    df_c = df_clientes.rename(columns={'Nº Cliente': 'nro_cliente_cli', 'Latitud': 'lat', 'Longitud': 'lon'})
+    # Clientes - Extraer Coordenadas y Precinto
+    df_c = df_clientes.rename(columns={
+        'Nº Cliente': 'nro_cliente_cli', 
+        'Latitud': 'lat', 
+        'Longitud': 'lon',
+        'N° de Precinto': 'precinto_cliente' # Nuevo campo
+    })
     df_c['nro_cliente_cli'] = df_c['nro_cliente_cli'].astype(str)
     df_c['lat'] = pd.to_numeric(df_c['lat'].astype(str).str.replace(',', '.'), errors='coerce')
     df_c['lon'] = pd.to_numeric(df_c['lon'].astype(str).str.replace(',', '.'), errors='coerce')
-    coords = df_c[['nro_cliente_cli', 'lat', 'lon']].dropna(subset=['lat', 'lon'])
+    
+    # Limpiar precinto (si es '*' o vacío, que sea nulo para no mostrarlo)
+    df_c['precinto_cliente'] = df_c['precinto_cliente'].replace(['*', '', ' '], np.nan)
+
+    # Seleccionar columnas y eliminar duplicados por si hay inconsistencias
+    datos_cliente = df_c[['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente']].drop_duplicates(subset=['nro_cliente_cli'])
 
     # Reclamos
     df_r = df_reclamos.copy()
     df_r['Nº Cliente'] = df_r['Nº Cliente'].astype(str)
-    df_r = df_r.merge(coords, left_on='Nº Cliente', right_on='nro_cliente_cli', how='left')
+    
+    # Merge: Agregamos lat, lon y precinto_cliente
+    df_r = df_r.merge(datos_cliente, left_on='Nº Cliente', right_on='nro_cliente_cli', how='left')
 
     # Fechas
     tz_argentina = timezone(timedelta(hours=-3))
@@ -94,25 +106,33 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
     sheet_row_num = row.name + 2 
     horas = row['Horas_Transcurridas']
 
+    # Badges
     badge = "🟢 Normal"
     if pd.notna(horas):
         if horas >= 48: badge = "🔴 +48 hs"
         elif horas >= 24: badge = "🟡 +24 hs"
 
+    # Datos
     direccion = str(row.get('Dirección', 'Sin dirección')) if pd.notna(row.get('Dirección')) else 'Sin dirección'
     telefono = str(row.get('Teléfono', 'Sin teléfono')) if pd.notna(row.get('Teléfono')) else 'Sin teléfono'
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
     detalles = str(row.get('Detalles', '')) if pd.notna(row.get('Detalles')) and str(row.get('Detalles')) != '*' else ''
-    precinto = str(row.get('N° de Precinto', '')) if pd.notna(row.get('N° de Precinto')) and str(row.get('N° de Precinto')) != '*' else ''
     sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
     nombre_cliente = str(row.get('Nombre', ''))
+    
+    # Precinto: Ahora se toma de la hoja de Clientes (merge)
+    precinto = ''
+    if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '']:
+        precinto = str(row.get('precinto_cliente'))
 
+    # Tiempo
     if pd.notna(horas):
         if horas < 1: texto_tiempo = f"hace {int(horas * 60)} min"
         elif horas < 24: texto_tiempo = f"hace {int(horas)} hs"
         else: texto_tiempo = f"hace {int(horas / 24)} días"
     else: texto_tiempo = "Fecha inválida"
 
+    # Tarjeta
     with st.container(border=True):
         col1, col2 = st.columns([4, 1])
         with col1: st.markdown(f"### 🎫 Nº {row['Nº Cliente']} - {nombre_cliente}")
@@ -125,7 +145,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
         st.markdown(f"⚙️ **Reclamo:** {tipo_reclamo}")
 
         if detalles: st.info(f"📝 Detalles: {detalles}")
-        if precinto: st.warning(f"🔒 Precinto: {precinto}")
+        if precinto: st.warning(f"🔒 Precinto del Cliente: {precinto}") # Cambio de texto para aclarar
 
         tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
         if tiene_ubicacion:
@@ -146,7 +166,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
                 st.error(f"Error al actualizar: {e}")
 
 # =========================================================
-# GENERADOR DE PDF (MEJORADO SIN CORTES)
+# GENERADOR DE PDF
 # =========================================================
 class PDFReporte(FPDF):
     def header(self):
@@ -167,7 +187,7 @@ def generar_pdf(df, fecha_str):
     col_width = 60
     margin_x = 10
     margin_y = 20
-    bottom_limit = 270 # Límite inferior de la página
+    bottom_limit = 270 
     cols_x = [margin_x, margin_x + col_width + 5, margin_x + 2*(col_width + 5)]
     
     current_col = 0
@@ -180,20 +200,16 @@ def generar_pdf(df, fecha_str):
     for tecnico in tecnicos:
         df_tec = df[df['Tecnico_Grupo'] == tecnico]
         count_tec = len(df_tec)
-        
-        # Calcular la altura que ocupará este técnico (7mm cabecera + 5mm por cada reclamo)
         block_height = 7 + (count_tec * 5)
 
-        # Si el bloque NO entra en el espacio restante de la columna, paso a la siguiente
         if current_y + block_height > bottom_limit:
             current_col += 1
-            if current_col > 2: # Si no hay más columnas, nueva página
+            if current_col > 2:
                 pdf.add_page()
                 current_col = 0
             current_x = cols_x[current_col]
             current_y = margin_y
 
-        # Imprimir Cabecera del Técnico (Con cantidad de trabajos)
         tecnico_safe = tecnico.encode('latin-1', 'replace').decode('latin-1')
         pdf.set_xy(current_x, current_y)
         pdf.set_font('Helvetica', 'B', 9)
@@ -201,9 +217,7 @@ def generar_pdf(df, fecha_str):
         pdf.line(current_x, current_y + 5, current_x + col_width, current_y + 5)
         current_y += 7
 
-        # Imprimir Listado
         for idx, row in df_tec.iterrows():
-            # Seguridad extra por si un técnico tiene muchísimos reclamos y supera una columna entera
             if current_y > bottom_limit:
                 current_col += 1
                 if current_col > 2:
@@ -212,7 +226,7 @@ def generar_pdf(df, fecha_str):
                 current_x = cols_x[current_col]
                 current_y = margin_y
 
-            status = "OK" if row['Estado_Limpio'] == "Verificado" else "NO"
+            status = "OK" if row['Estado_Limpio'] == "Verificado" else "Pendiente"
             nro_cliente_safe = str(row['Nº Cliente']).encode('latin-1', 'replace').decode('latin-1')
             text = f"{nro_cliente_safe} - {status}"
 
@@ -265,7 +279,7 @@ def main_app():
     es_admin = st.session_state.get('es_admin', False)
     rol = st.session_state.rol
 
-    # Header con botones Actualizar y Salir
+    # Header
     col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
         st.markdown(f"### 👷 {st.session_state.user_name} ({'Admin' if es_admin else 'Técnico'})")
@@ -284,11 +298,8 @@ def main_app():
     df_reclamos, _ = cargar_datos()
     ws_reclamos, _, _ = init_google_sheets()
 
-    # Filtros estrictos
-    estados_validos = ["En curso", "Verificado"]
-    mask_estado_valido = df_reclamos['Estado_Limpio'].isin(estados_validos)
+    # Filtros base y técnicos asignados
     mask_tecnico_asignado = df_reclamos['Tecnico_Limpio'].notna()
-    df_activos = df_reclamos[mask_estado_valido & mask_tecnico_asignado].copy()
 
     # =====================================================
     # VISTA ADMIN
@@ -296,6 +307,7 @@ def main_app():
     if es_admin:
         st.markdown("### 👑 Panel de Administración")
         
+        # --- HERRAMIENTAS ADMIN ---
         with st.container(border=True):
             st.markdown("**⚙️ Herramientas de Gestión**")
             col_p1, col_p2 = st.columns(2)
@@ -304,7 +316,12 @@ def main_app():
                 if st.button("📄 Generar PDF del Día", use_container_width=True):
                     with st.spinner("Generando PDF..."):
                         try:
-                            pdf_bytes = generar_pdf(df_activos, datetime.now().strftime("%d/%m/%Y"))
+                            # Para el PDF, sí incluimos los Verificados para que quede el registro del día
+                            estados_pdf = ["En curso", "Verificado"]
+                            mask_pdf = df_reclamos['Estado_Limpio'].isin(estados_pdf)
+                            df_activos_pdf = df_reclamos[mask_pdf & mask_tecnico_asignado].copy()
+                            
+                            pdf_bytes = generar_pdf(df_activos_pdf, datetime.now().strftime("%d/%m/%Y"))
                             st.download_button(
                                 label="⬇️ Descargar PDF",
                                 data=pdf_bytes,
@@ -343,20 +360,25 @@ def main_app():
         
         st.divider()
 
-        if df_activos.empty:
-            st.success("🎉 No hay reclamos En curso/Verificados con técnico asignado.")
+        # --- LISTADO ADMIN (Solo ve "En curso", al verificar desaparece) ---
+        estados_display = ["En curso"]
+        mask_estado_display = df_reclamos['Estado_Limpio'].isin(estados_display)
+        df_activos_display = df_reclamos[mask_estado_display & mask_tecnico_asignado].copy()
+
+        if df_activos_display.empty:
+            st.success("🎉 No hay reclamos En curso con técnico asignado.")
             return
 
-        tecnicos_unicos = sorted(df_activos['Tecnico_Limpio'].unique())
+        tecnicos_unicos = sorted(df_activos_display['Tecnico_Limpio'].unique())
         tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
         
         if tecnico_seleccionado == "Todos":
-            df_filtrado = df_activos.copy()
+            df_filtrado = df_activos_display.copy()
         else:
-            df_filtrado = df_activos[df_activos['Tecnico_Limpio'] == tecnico_seleccionado].copy()
+            df_filtrado = df_activos_display[df_activos_display['Tecnico_Limpio'] == tecnico_seleccionado].copy()
 
         df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
-        st.markdown(f"**Reclamos en curso/verificados: {len(df_filtrado)}**")
+        st.markdown(f"**Reclamos en curso: {len(df_filtrado)}**")
 
         if tecnico_seleccionado == "Todos":
             for tecnico, grupo in df_filtrado.groupby('Tecnico_Limpio'):
