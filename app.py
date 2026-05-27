@@ -34,7 +34,9 @@ SCOPES = [
 # =========================================================
 @st.cache_resource(show_spinner="Conectando...")
 def init_google_sheets():
+
     try:
+
         creds = Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
             scopes=SCOPES
@@ -49,6 +51,7 @@ def init_google_sheets():
         return ws_reclamos, ws_clientes, ws_usuarios
 
     except Exception as e:
+
         st.error(f"Error de conexión: {e}")
         st.stop()
 
@@ -65,9 +68,9 @@ def cargar_datos():
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
 
-    # -----------------------------------------------------
+    # =====================================================
     # CLIENTES
-    # -----------------------------------------------------
+    # =====================================================
     df_c = df_clientes.rename(columns={
         'Nº Cliente': 'nro_cliente_cli',
         'Latitud': 'lat',
@@ -90,9 +93,9 @@ def cargar_datos():
         subset=['lat', 'lon']
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # RECLAMOS
-    # -----------------------------------------------------
+    # =====================================================
     df_r = df_reclamos.copy()
 
     df_r['Nº Cliente'] = df_r['Nº Cliente'].astype(str)
@@ -105,10 +108,11 @@ def cargar_datos():
         how='left'
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # FECHAS
-    # -----------------------------------------------------
+    # =====================================================
     tz_argentina = timezone(timedelta(hours=-3))
+
     ahora = datetime.now(tz_argentina)
 
     df_r['Fecha_Parseada'] = pd.to_datetime(
@@ -133,16 +137,11 @@ def cargar_datos():
 # =========================================================
 def login_screen():
 
-    st.markdown(
-        """
-        <h1 style='text-align:center;'>
-            🔧 Fusion App Técnicos
-        </h1>
-        """,
-        unsafe_allow_html=True
-    )
+    st.title("🔧 Fusion App Técnicos")
 
-    st.write("Ingresá tus credenciales para ver tus reclamos asignados.")
+    st.write(
+        "Ingresá tus credenciales para ver tus reclamos asignados."
+    )
 
     with st.form("login_form"):
 
@@ -188,12 +187,17 @@ def login_screen():
                         st.rerun()
 
                     else:
-                        st.warning("Este usuario no es un técnico.")
+                        st.warning(
+                            "Este usuario no es un técnico de campo."
+                        )
 
                 else:
-                    st.error("Usuario o contraseña incorrectos.")
+                    st.error(
+                        "Usuario o contraseña incorrectos."
+                    )
 
             except Exception as e:
+
                 st.error(f"Error al cargar datos: {e}")
 
 
@@ -204,31 +208,37 @@ def main_app():
 
     rol_tecnico = st.session_state.rol_tecnico
 
-    # -----------------------------------------------------
+    # =====================================================
     # HEADER
-    # -----------------------------------------------------
+    # =====================================================
     col1, col2 = st.columns([4, 1])
 
     with col1:
         st.markdown(f"### 👷 {st.session_state.user_name}")
 
     with col2:
+
         if st.button("🚪 Salir"):
+
             st.session_state.authenticated = False
             st.rerun()
 
     st.divider()
 
-    # -----------------------------------------------------
+    # =====================================================
     # DATOS
-    # -----------------------------------------------------
+    # =====================================================
     df_reclamos, _ = cargar_datos()
+
     ws_reclamos, _, _ = init_google_sheets()
 
-    # -----------------------------------------------------
+    # =====================================================
     # FILTROS
-    # -----------------------------------------------------
-    estados_excluidos = ["Resuelto", "Verificado"]
+    # =====================================================
+    estados_excluidos = [
+        "Resuelto",
+        "Verificado"
+    ]
 
     mask_tecnico = df_reclamos['Técnico'].str.contains(
         rol_tecnico,
@@ -236,7 +246,9 @@ def main_app():
         na=False
     )
 
-    mask_estado = ~df_reclamos['Estado'].isin(estados_excluidos)
+    mask_estado = ~df_reclamos['Estado'].isin(
+        estados_excluidos
+    )
 
     mis_reclamos = df_reclamos[
         mask_tecnico & mask_estado
@@ -252,62 +264,42 @@ def main_app():
         f"### 📋 Reclamos en curso: {len(mis_reclamos)}"
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # SIN RECLAMOS
-    # -----------------------------------------------------
+    # =====================================================
     if mis_reclamos.empty:
-        st.success("🎉 No tenés reclamos pendientes.")
+
+        st.success(
+            "🎉 No tenés reclamos pendientes."
+        )
+
         return
 
     # =====================================================
-    # RECORRER RECLAMOS
+    # TARJETAS
     # =====================================================
     for idx, row in mis_reclamos.iterrows():
 
         sheet_row_num = idx + 2
 
-        # -------------------------------------------------
-        # COLORES
-        # -------------------------------------------------
         horas = row['Horas_Transcurridas']
 
-        color_fondo = "#ffffff"
-        color_borde = "#e0e0e0"
+        # =================================================
+        # BADGES
+        # =================================================
         badge = "🟢 Normal"
 
         if pd.notna(horas):
 
             if horas >= 48:
-                color_fondo = "#ffebee"
-                color_borde = "#ef9a9a"
                 badge = "🔴 +48 hs"
 
             elif horas >= 24:
-                color_fondo = "#fff9e6"
-                color_borde = "#ffe082"
                 badge = "🟡 +24 hs"
 
-        # -------------------------------------------------
-        # TEXTO TIEMPO
-        # -------------------------------------------------
-        if pd.notna(horas):
-
-            if horas < 1:
-                texto_tiempo = f"hace {int(horas * 60)} min"
-
-            elif horas < 24:
-                texto_tiempo = f"hace {int(horas)} hs"
-
-            else:
-                texto_tiempo = f"hace {int(horas / 24)} días"
-
-        else:
-            texto_tiempo = "Fecha inválida"
-            badge = "⚪ Sin fecha"
-
-        # -------------------------------------------------
+        # =================================================
         # DATOS
-        # -------------------------------------------------
+        # =================================================
         direccion = (
             str(row.get('Dirección', 'Sin dirección'))
             if pd.notna(row.get('Dirección'))
@@ -342,145 +334,146 @@ def main_app():
             else ''
         )
 
-        # =================================================
-        # TARJETA
-        # =================================================
-        st.markdown(
-            f"""
-            <div style="
-                background-color:{color_fondo};
-                padding:15px;
-                border-radius:12px;
-                border:2px solid {color_borde};
-                margin-bottom:10px;
-            ">
-
-                <div style="
-                    display:flex;
-                    justify-content:space-between;
-                    align-items:center;
-                ">
-
-                    <h4 style="
-                        margin:0;
-                        color:#333;
-                    ">
-                        🎫 Nº {row['Nº Cliente']} - {row['Nombre']}
-                    </h4>
-
-                    <span style="
-                        font-size:13px;
-                        font-weight:bold;
-                        color:#555;
-                    ">
-                        {badge} ({texto_tiempo})
-                    </span>
-
-                </div>
-
-                <hr style="
-                    margin:8px 0;
-                    border-top:1px solid {color_borde};
-                ">
-
-                <p style="
-                    margin:2px 0;
-                    font-size:18px;
-                    font-weight:bold;
-                    color:#0d47a1;
-                ">
-                    📍 Sector: {sector}
-                </p>
-
-                <p style="margin:2px 0;">
-                    <b>Dirección:</b> {direccion}
-                </p>
-
-                <p style="margin:2px 0;">
-                    <b>📞 Teléfono:</b> {telefono}
-                </p>
-
-                <p style="margin:2px 0;">
-                    <b>⚙️ Reclamo:</b> {tipo_reclamo}
-                </p>
-
-            </div>
-            """,
-            unsafe_allow_html=True
+        nombre_cliente = str(
+            row.get('Nombre', '')
         )
 
-        # -------------------------------------------------
-        # DETALLES
-        # -------------------------------------------------
-        if detalles:
-            st.info(f"📝 Detalles: {detalles}")
-
-        # -------------------------------------------------
-        # PRECINTO
-        # -------------------------------------------------
-        if precinto:
-            st.warning(f"🔒 Precinto: {precinto}")
-
         # =================================================
-        # UBICACIÓN (SOLUCIÓN DEFINITIVA)
+        # TIEMPO
         # =================================================
-        tiene_ubicacion = (
-            pd.notna(row.get('lat')) and
-            pd.notna(row.get('lon'))
-        )
+        if pd.notna(horas):
 
-        if tiene_ubicacion:
+            if horas < 1:
+                texto_tiempo = f"hace {int(horas * 60)} min"
 
-            lat = row['lat']
-            lon = row['lon']
+            elif horas < 24:
+                texto_tiempo = f"hace {int(horas)} hs"
 
-            maps_url = (
-                f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}"
-            )
-
-            st.link_button(
-                "📍 Abrir ubicación en Google Maps",
-                maps_url,
-                use_container_width=True
-            )
+            else:
+                texto_tiempo = f"hace {int(horas / 24)} días"
 
         else:
 
-            st.caption("❌ Sin ubicación")
+            texto_tiempo = "Fecha inválida"
 
         # =================================================
-        # BOTÓN VERIFICAR
+        # TARJETA SIMPLE Y ESTABLE
         # =================================================
-        if st.button(
-            "✅ Verificar Trabajo",
-            key=f"verify_{sheet_row_num}",
-            use_container_width=True
-        ):
+        with st.container(border=True):
 
-            try:
+            col1, col2 = st.columns([4, 1])
 
-                col_idx = (
-                    df_reclamos.columns.get_loc('Estado') + 1
+            with col1:
+
+                st.markdown(
+                    f"### 🎫 Nº {row['Nº Cliente']} - {nombre_cliente}"
                 )
 
-                ws_reclamos.update_cell(
-                    sheet_row_num,
-                    col_idx,
-                    "Verificado"
+            with col2:
+
+                st.markdown(
+                    f"**{badge}**"
                 )
 
-                st.cache_data.clear()
+            st.caption(texto_tiempo)
 
-                st.success(
-                    "¡Reclamo verificado! Actualizando..."
+            st.markdown(
+                f"📍 **Sector:** {sector}"
+            )
+
+            st.markdown(
+                f"**Dirección:** {direccion}"
+            )
+
+            st.markdown(
+                f"📞 **Teléfono:** {telefono}"
+            )
+
+            st.markdown(
+                f"⚙️ **Reclamo:** {tipo_reclamo}"
+            )
+
+            # =============================================
+            # DETALLES
+            # =============================================
+            if detalles:
+
+                st.info(
+                    f"📝 Detalles: {detalles}"
                 )
 
-                time.sleep(1)
+            # =============================================
+            # PRECINTO
+            # =============================================
+            if precinto:
 
-                st.rerun()
+                st.warning(
+                    f"🔒 Precinto: {precinto}"
+                )
 
-            except Exception as e:
-                st.error(f"Error al actualizar: {e}")
+            # =============================================
+            # UBICACIÓN
+            # =============================================
+            tiene_ubicacion = (
+                pd.notna(row.get('lat')) and
+                pd.notna(row.get('lon'))
+            )
+
+            if tiene_ubicacion:
+
+                lat = row['lat']
+                lon = row['lon']
+
+                maps_url = (
+                    f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}"
+                )
+
+                st.link_button(
+                    "📍 Abrir ubicación en Google Maps",
+                    maps_url,
+                    use_container_width=True
+                )
+
+            else:
+
+                st.caption("❌ Sin ubicación")
+
+            # =============================================
+            # VERIFICAR
+            # =============================================
+            if st.button(
+                "✅ Verificar Trabajo",
+                key=f"verify_{sheet_row_num}",
+                use_container_width=True
+            ):
+
+                try:
+
+                    col_idx = (
+                        df_reclamos.columns.get_loc('Estado') + 1
+                    )
+
+                    ws_reclamos.update_cell(
+                        sheet_row_num,
+                        col_idx,
+                        "Verificado"
+                    )
+
+                    st.cache_data.clear()
+
+                    st.success(
+                        "¡Reclamo verificado!"
+                    )
+
+                    time.sleep(1)
+
+                    st.rerun()
+
+                except Exception as e:
+
+                    st.error(
+                        f"Error al actualizar: {e}"
+                    )
 
         st.write("")
 
@@ -489,9 +482,13 @@ def main_app():
 # FLUJO PRINCIPAL
 # =========================================================
 if "authenticated" not in st.session_state:
+
     st.session_state.authenticated = False
 
 if st.session_state.authenticated:
+
     main_app()
+
 else:
+
     login_screen()
