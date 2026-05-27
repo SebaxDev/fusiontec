@@ -3,6 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timezone, timedelta
+import time
 
 # --- CONFIGURACIÓN DE PÁGINA (Optimizada para móvil) ---
 st.set_page_config(page_title="Fusion - App Técnicos", page_icon="🔧", layout="centered", initial_sidebar_state="collapsed")
@@ -64,16 +65,11 @@ def cargar_datos():
     df_r = df_r.merge(coords, left_on='Nº Cliente', right_on='nro_cliente_cli', how='left')
 
     # --- CÁLCULO DE TIEMPO (Para los colores) ---
-    # Zona horaria Argentina (UTC-3)
     tz_argentina = timezone(timedelta(hours=-3))
     ahora = datetime.now(tz_argentina)
     
-    # Parsear la fecha de la hoja (Formato dd/mm/yyyy HH:MM)
     df_r['Fecha_Parseada'] = pd.to_datetime(df_r['Fecha y hora'], format='%d/%m/%Y %H:%M', errors='coerce')
-    # Asignar zona horaria a las fechas parseadas para poder restar
     df_r['Fecha_Parseada'] = df_r['Fecha_Parseada'].dt.tz_localize(tz_argentina)
-    
-    # Calcular diferencia en horas
     df_r['Horas_Transcurridas'] = (ahora - df_r['Fecha_Parseada']).dt.total_seconds() / 3600
 
     return df_r, df_usuarios
@@ -132,7 +128,7 @@ def main_app():
     
     mis_reclamos = df_reclamos[mask_tecnico & mask_estado].copy()
 
-    # ORDENAMIENTO: Los más viejos primero (para que priorice los rojos)
+    # ORDENAMIENTO: Los más viejos primero
     mis_reclamos = mis_reclamos.sort_values(by='Horas_Transcurridas', ascending=False)
 
     st.markdown(f"**Reclamos en curso: {len(mis_reclamos)}**")
@@ -147,21 +143,16 @@ def main_app():
         
         # --- LÓGICA DE COLORES ---
         horas = row['Horas_Transcurridas']
-        
-        # Default (Menos de 24hs)
         color_fondo = "#ffffff" 
         color_borde = "#e0e0e0"
         badge = "🟢 Normal"
         
-        # Alerta Amarilla (Entre 24 y 48 hs)
         if pd.notna(horas) and horas >= 24 and horas < 48:
-            color_fondo = "#fff9e6" # Amarillo pastel suave
+            color_fondo = "#fff9e6"
             color_borde = "#ffe082"
             badge = "🟡 +24 hs"
-            
-        # Alerta Roja (Más de 48 hs)
         elif pd.notna(horas) and horas >= 48:
-            color_fondo = "#ffebee" # Rojo pastel suave
+            color_fondo = "#ffebee"
             color_borde = "#ef9a9a"
             badge = "🔴 +48 hs"
 
@@ -174,7 +165,7 @@ def main_app():
             texto_tiempo = "Fecha inválida"
             badge = "⚪ Sin fecha"
 
-        # Datos del cliente con protección de nulos
+        # Datos del cliente con protección
         direccion = str(row.get('Dirección', '')) if pd.notna(row.get('Dirección')) else 'Sin dirección'
         telefono = str(row.get('Teléfono', '')) if pd.notna(row.get('Teléfono')) else 'Sin teléfono'
         tipo_reclamo = str(row.get('Tipo de reclamo', ''))
@@ -182,21 +173,25 @@ def main_app():
         precinto = str(row.get('N° de Precinto', '')) if pd.notna(row.get('N° de Precinto')) and str(row.get('N° de Precinto', '')) != '*' else ''
         sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
 
-        # --- GENERACIÓN DE TARJETA HTML ---
+        # --- GENERACIÓN DE TARJETA HTML (CORREGIDA) ---
         detalles_html = f"<p style='margin: 2px 0;'><b>📝 Detalles:</b> <i>{detalles}</i></p>" if detalles else ""
         precinto_html = f"<p style='margin: 2px 0;'><b>🔒 Precinto:</b> {precinto}</p>" if precinto else ""
         
+        # Botón de Mapa o Botón Deshabilitado visual
         maps_html = ""
         if pd.notna(row.get('lat')) and pd.notna(row.get('lon')):
             lat = row['lat']
             lon = row['lon']
             maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}"
-            maps_html = f"<a href='{maps_url}' target='_blank' style='display: inline-block; margin-top: 8px; padding: 5px 10px; background-color: #0d47a1; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;'>📍 Navegar al Cliente</a>"
+            # Botón Activo Azul
+            maps_html = f"<a href='{maps_url}' target='_blank' style='display: inline-block; margin-top: 10px; padding: 10px 15px; background-color: #0d47a1; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; text-align: center;'>📍 Navegar al Cliente</a>"
         else:
-            maps_html = "<p style='margin-top:8px; color: #999;'>❌ Sin ubicación en mapa</p>"
+            # Botón Inactivo Gris (Diseño consistente)
+            maps_html = "<div style='display: inline-block; margin-top: 10px; padding: 10px 15px; background-color: #e0e0e0; color: #757575; border-radius: 5px; font-weight: bold; text-align: center; cursor: not-allowed;'>❌ Sin ubicación en mapa</div>"
 
+        # Agregué overflow: auto; al div principal para forzar el fondo y que no se desborde el contenido
         st.markdown(f"""
-        <div style="background-color: {color_fondo}; padding: 15px; border-radius: 10px; border: 2px solid {color_borde}; margin-bottom: 5px;">
+        <div style="background-color: {color_fondo}; padding: 15px; border-radius: 10px; border: 2px solid {color_borde}; margin-bottom: 5px; overflow: auto;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <h4 style="margin:0; color:#333;">🎫 Nº {row['Nº Cliente']} - {row['Nombre']}</h4>
                 <span style="font-size: 13px; font-weight: bold; color: #555;">{badge} ({texto_tiempo})</span>
@@ -212,7 +207,7 @@ def main_app():
         </div>
         """, unsafe_allow_html=True)
 
-        # Botón de Streamlit nativo (fuera del HTML para que funcione correctamente)
+        # Botón de Streamlit nativo
         if st.button("✅ Verificar Trabajo", key=f"verify_{sheet_row_num}", use_container_width=True):
             try:
                 col_idx = df_reclamos.columns.get_loc('Estado') + 1
@@ -224,7 +219,7 @@ def main_app():
             except Exception as e:
                 st.error(f"Error al actualizar: {e}")
                 
-        st.write("") # Espaciador entre tarjetas
+        st.write("") 
 
 # --- FLUJO DE EJECUCIÓN ---
 if "authenticated" not in st.session_state:
