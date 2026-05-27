@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
+from datetime import datetime, timezone, timedelta
 
 # --- CONFIGURACIÓN DE PÁGINA (Optimizada para móvil) ---
 st.set_page_config(page_title="Fusion - App Técnicos", page_icon="🔧", layout="centered", initial_sidebar_state="collapsed")
@@ -9,7 +10,7 @@ st.set_page_config(page_title="Fusion - App Técnicos", page_icon="🔧", layout
 # ==========================================
 # CONFIGURACIÓN DE CONEXIÓN
 # ==========================================
-SHEET_ID = "13R_3Mdr25Jd-nGhK7CxdcbKkFWLc0LPdYrOLOY8sZJo" # Tu mismo Sheet ID
+SHEET_ID = "13R_3Mdr25Jd-nGhK7CxdcbKkFWLc0LPdYrOLOY8sZJo"
 
 WORKSHEET_RECLAMOS = "Reclamos"
 WORKSHEET_CLIENTES = "Clientes"
@@ -40,7 +41,7 @@ def init_google_sheets():
         st.stop()
 
 # --- CARGA DE DATOS ---
-@st.cache_data(ttl=120) # Cache más corto (2 min) para que vean los cambios rápido
+@st.cache_data(ttl=120)
 def cargar_datos():
     ws_reclamos, ws_clientes, ws_usuarios = init_google_sheets()
     
@@ -62,6 +63,19 @@ def cargar_datos():
     # Cruce para obtener coordenadas
     df_r = df_r.merge(coords, left_on='Nº Cliente', right_on='nro_cliente_cli', how='left')
 
+    # --- CÁLCULO DE TIEMPO (Para los colores) ---
+    # Zona horaria Argentina (UTC-3)
+    tz_argentina = timezone(timedelta(hours=-3))
+    ahora = datetime.now(tz_argentina)
+    
+    # Parsear la fecha de la hoja (Formato dd/mm/yyyy HH:MM)
+    df_r['Fecha_Parseada'] = pd.to_datetime(df_r['Fecha y hora'], format='%d/%m/%Y %H:%M', errors='coerce')
+    # Asignar zona horaria a las fechas parseadas para poder restar
+    df_r['Fecha_Parseada'] = df_r['Fecha_Parseada'].dt.tz_localize(tz_argentina)
+    
+    # Calcular diferencia en horas
+    df_r['Horas_Transcurridas'] = (ahora - df_r['Fecha_Parseada']).dt.total_seconds() / 3600
+
     return df_r, df_usuarios
 
 # --- SISTEMA DE LOGIN ---
@@ -80,7 +94,7 @@ def login_screen():
                 user_row = df_usuarios[(df_usuarios['username'] == username) & (df_usuarios['password'] == password)]
                 if not user_row.empty:
                     rol_tecnico = str(user_row.iloc[0]['rol']).strip()
-                    if rol_tecnico and rol_tecnico.lower() not in ['admin', 'oficina', 'supervisor']: # Validación básica
+                    if rol_tecnico and rol_tecnico.lower() not in ['admin', 'oficina', 'supervisor']:
                         st.session_state["authenticated"] = True
                         st.session_state["user_name"] = user_row.iloc[0]['nombre']
                         st.session_state["rol_tecnico"] = rol_tecnico
@@ -111,68 +125,106 @@ def main_app():
     df_reclamos, _ = cargar_datos()
     ws_reclamos, _, _ = init_google_sheets()
 
-    # FILTRO PRINCIPAL: Solo reclamos donde el técnico está asignado y NO están resueltos/verificados
+    # FILTRO PRINCIPAL
     estados_excluidos = ["Resuelto", "Verificado"]
-    
-    # Lógica de búsqueda parcial (Ej: "CONEJO" encuentra "CONEJO, JUAN")
-    # Ignoramos mayúsculas/minúsculas por si acaso
     mask_tecnico = df_reclamos['Técnico'].str.contains(rol_tecnico, case=False, na=False)
     mask_estado = ~df_reclamos['Estado'].isin(estados_excluidos)
     
     mis_reclamos = df_reclamos[mask_tecnico & mask_estado].copy()
 
-    # Contador
+    # ORDENAMIENTO: Los más viejos primero (para que priorice los rojos)
+    mis_reclamos = mis_reclamos.sort_values(by='Horas_Transcurridas', ascending=False)
+
     st.markdown(f"**Reclamos en curso: {len(mis_reclamos)}**")
 
     if mis_reclamos.empty:
         st.success("🎉 ¡Al día! No tenés reclamos pendientes por el momento.")
         return
 
-    # Mostrar tarjetas de reclamos
+    # Mostrar tarjetas
     for idx, row in mis_reclamos.iterrows():
-        # ID de fila real en Google Sheets (índice de pandas + 2 por encabezado y base 0)
         sheet_row_num = idx + 2 
         
-        with st.container():
-            # Cabecera de la tarjeta
-            st.markdown(f"#### 🎫 Nº Cliente: {row['Nº Cliente']} - {row['Nombre']}")
+        # --- LÓGICA DE COLORES ---
+        horas = row['Horas_Transcurridas']
+        
+        # Default (Menos de 24hs)
+        color_fondo = "#ffffff" 
+        color_borde = "#e0e0e0"
+        badge = "🟢 Normal"
+        
+        # Alerta Amarilla (Entre 24 y 48 hs)
+        if pd.notna(horas) and horas >= 24 and horas < 48:
+            color_fondo = "#fff9e6" # Amarillo pastel suave
+            color_borde = "#ffe082"
+            badge = "🟡 +24 hs"
             
-            col_info, col_acciones = st.columns([3, 2])
-            
-            with col_info:
-                st.markdown(f"**📍 Dirección:** {row['Dirección']}")
-                st.markdown(f"**📞 Teléfono:** {row['Teléfono']}")
-                st.markdown(f"**⚙️ Reclamo:** {row['Tipo de reclamo']}")
-                if pd.notna(row.get('Detalles')) and str(row.get('Detalles', '')) != '*':
-                    st.markdown(f"**📝 Detalles:** *{row['Detalles']}*")
-                if pd.notna(row.get('N° de Precinto')) and str(row.get('N° de Precinto', '')) != '*':
-                    st.markdown(f"**🔒 Precinto:** {row['N° de Precinto']}")
+        # Alerta Roja (Más de 48 hs)
+        elif pd.notna(horas) and horas >= 48:
+            color_fondo = "#ffebee" # Rojo pastel suave
+            color_borde = "#ef9a9a"
+            badge = "🔴 +48 hs"
 
-            with col_acciones:
-                # Botón de Navegación (Maps / Waze)
-                if pd.notna(row.get('lat')) and pd.notna(row.get('lon')):
-                    lat = row['lat']
-                    lon = row['lon']
-                    maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}"
-                    st.markdown(f"[📍 Navegar al Cliente]({maps_url})", unsafe_allow_html=True)
-                else:
-                    st.markdown("❌ Sin ubicación")
+        # Texto de tiempo transcurrido amigable
+        if pd.notna(horas):
+            if horas < 1: texto_tiempo = f"hace {int(horas*60)} min"
+            elif horas < 24: texto_tiempo = f"hace {int(horas)} hs"
+            else: texto_tiempo = f"hace {int(horas/24)} días"
+        else:
+            texto_tiempo = "Fecha inválida"
+            badge = "⚪ Sin fecha"
+
+        # Datos del cliente con protección de nulos
+        direccion = str(row.get('Dirección', '')) if pd.notna(row.get('Dirección')) else 'Sin dirección'
+        telefono = str(row.get('Teléfono', '')) if pd.notna(row.get('Teléfono')) else 'Sin teléfono'
+        tipo_reclamo = str(row.get('Tipo de reclamo', ''))
+        detalles = str(row.get('Detalles', '')) if pd.notna(row.get('Detalles')) and str(row.get('Detalles', '')) != '*' else ''
+        precinto = str(row.get('N° de Precinto', '')) if pd.notna(row.get('N° de Precinto')) and str(row.get('N° de Precinto', '')) != '*' else ''
+        sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
+
+        # --- GENERACIÓN DE TARJETA HTML ---
+        detalles_html = f"<p style='margin: 2px 0;'><b>📝 Detalles:</b> <i>{detalles}</i></p>" if detalles else ""
+        precinto_html = f"<p style='margin: 2px 0;'><b>🔒 Precinto:</b> {precinto}</p>" if precinto else ""
+        
+        maps_html = ""
+        if pd.notna(row.get('lat')) and pd.notna(row.get('lon')):
+            lat = row['lat']
+            lon = row['lon']
+            maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}"
+            maps_html = f"<a href='{maps_url}' target='_blank' style='display: inline-block; margin-top: 8px; padding: 5px 10px; background-color: #0d47a1; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;'>📍 Navegar al Cliente</a>"
+        else:
+            maps_html = "<p style='margin-top:8px; color: #999;'>❌ Sin ubicación en mapa</p>"
+
+        st.markdown(f"""
+        <div style="background-color: {color_fondo}; padding: 15px; border-radius: 10px; border: 2px solid {color_borde}; margin-bottom: 5px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h4 style="margin:0; color:#333;">🎫 Nº {row['Nº Cliente']} - {row['Nombre']}</h4>
+                <span style="font-size: 13px; font-weight: bold; color: #555;">{badge} ({texto_tiempo})</span>
+            </div>
+            <hr style="margin: 5px 0; border-top: 1px solid {color_borde};">
+            <p style="margin: 2px 0; font-size: 18px; font-weight: bold; color: #0d47a1;">📍 Sector: {sector}</p>
+            <p style="margin: 2px 0;"><b>Dirección:</b> {direccion}</p>
+            <p style="margin: 2px 0;"><b>📞 Teléfono:</b> {telefono}</p>
+            <p style="margin: 2px 0;"><b>⚙️ Reclamo:</b> {tipo_reclamo}</p>
+            {detalles_html}
+            {precinto_html}
+            {maps_html}
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Botón de Streamlit nativo (fuera del HTML para que funcione correctamente)
+        if st.button("✅ Verificar Trabajo", key=f"verify_{sheet_row_num}", use_container_width=True):
+            try:
+                col_idx = df_reclamos.columns.get_loc('Estado') + 1
+                ws_reclamos.update_cell(sheet_row_num, col_idx, "Verificado")
+                st.cache_data.clear()
+                st.success("¡Reclamo Verificado! Actualizando lista...")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al actualizar: {e}")
                 
-                # Botón de Verificar (Estado -> Verificado)
-                # Usamos un key único basado en el número de fila de la hoja
-                if st.button("✅ Verificar Trabajo", key=f"verify_{sheet_row_num}", use_container_width=True):
-                    try:
-                        # Encontrar la columna "Estado" dinámicamente
-                        col_idx = df_reclamos.columns.get_loc('Estado') + 1 # +1 porque gspread es base 1
-                        ws_reclamos.update_cell(sheet_row_num, col_idx, "Verificado")
-                        st.cache_data.clear() # Limpiar cache para que desaparezca
-                        st.success("¡Reclamo Verificado! Actualizando lista...")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error al actualizar: {e}")
-            
-            st.divider()
+        st.write("") # Espaciador entre tarjetas
 
 # --- FLUJO DE EJECUCIÓN ---
 if "authenticated" not in st.session_state:
