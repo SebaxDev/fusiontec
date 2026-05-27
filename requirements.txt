@@ -5,3 +5,4 @@ google-auth
 folium
 streamlit-folium
 geopy
+fpdf2

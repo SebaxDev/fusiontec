@@ -4,6 +4,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timezone, timedelta
 import time
+from fpdf import FPDF
+import io
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -80,10 +82,10 @@ def cargar_datos():
     return df_r, df_usuarios
 
 # =========================================================
-# FUNCIÓN PARA DIBUJAR TARJETAS (Reutilizable)
+# FUNCIÓN PARA DIBUJAR TARJETAS
 # =========================================================
 def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
-    sheet_row_num = row.name + 2 # El índice de pandas + 2
+    sheet_row_num = row.name + 2 
     horas = row['Horas_Transcurridas']
 
     # Badges
@@ -123,7 +125,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
         if detalles: st.info(f"📝 Detalles: {detalles}")
         if precinto: st.warning(f"🔒 Precinto: {precinto}")
 
-        # Ubicación
         tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
         if tiene_ubicacion:
             maps_url = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
@@ -131,7 +132,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
         else:
             st.caption("❌ Sin ubicación")
 
-        # Verificar
         if st.button("✅ Verificar Trabajo", key=f"verify_{sheet_row_num}", use_container_width=True):
             try:
                 col_idx = df_reclamos.columns.get_loc('Estado') + 1
@@ -142,6 +142,81 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
                 st.rerun()
             except Exception as e:
                 st.error(f"Error al actualizar: {e}")
+
+# =========================================================
+# GENERADOR DE PDF
+# =========================================================
+class PDFReporte(FPDF):
+    def header(self):
+        self.set_font('Helvetica', 'B', 12)
+        self.cell(0, 10, f'Reclamos en Curso/Verificados - {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
+        self.ln(5)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Helvetica', 'I', 8)
+        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+
+def generar_pdf(df, fecha_str):
+    pdf = PDFReporte('P', 'mm', 'A4')
+    pdf.set_auto_page_break(auto=False) 
+    pdf.add_page()
+
+    col_width = 60
+    margin_x = 10
+    margin_y = 20
+    cols_x = [margin_x, margin_x + col_width + 5, margin_x + 2*(col_width + 5)]
+    current_col = 0
+    current_x = cols_x[current_col]
+    current_y = margin_y
+
+    # Asegurar que la columna Técnico exista y no tenga nulos
+    df['Técnico'] = df['Técnico'].fillna('Sin Asignar')
+    tecnicos = sorted(df['Técnico'].unique())
+
+    for tecnico in tecnicos:
+        df_tec = df[df['Técnico'] == tecnico]
+
+        # Salto de columna/página si no hay espacio para la cabecera del técnico
+        if current_y > 260:
+            current_col += 1
+            if current_col > 2:
+                pdf.add_page()
+                current_col = 0
+            current_x = cols_x[current_col]
+            current_y = margin_y
+
+        # Cabecera del técnico
+        # Solución para tildes/ñ en FPDF: codificar a latin-1 reemplazando lo que no se pueda
+        tecnico_safe = tecnico.encode('latin-1', 'replace').decode('latin-1')
+        
+        pdf.set_xy(current_x, current_y)
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(col_width, 5, f"Técnico: {tecnico_safe}", 0, 1)
+        pdf.line(current_x, current_y + 5, current_x + col_width, current_y + 5)
+        current_y += 7
+
+        # Listado de reclamos
+        for idx, row in df_tec.iterrows():
+            if current_y > 270:
+                current_col += 1
+                if current_col > 2:
+                    pdf.add_page()
+                    current_col = 0
+                current_x = cols_x[current_col]
+                current_y = margin_y
+
+            status = "OK" if row['Estado'] == "Verificado" else "NO"
+            nro_cliente_safe = str(row['Nº Cliente']).encode('latin-1', 'replace').decode('latin-1')
+            text = f"{nro_cliente_safe} - {status}"
+
+            pdf.set_xy(current_x, current_y)
+            pdf.set_font('Helvetica', '', 8)
+            pdf.cell(col_width, 4, text, 0, 1)
+            current_y += 5
+
+    # Devolver como bytes para Streamlit
+    return bytes(pdf.output())
 
 # =========================================================
 # LOGIN
@@ -163,7 +238,6 @@ def login_screen():
                     rol = str(user_row.iloc[0]['rol']).strip()
                     rol_lower = rol.lower()
                     
-                    # Determinar si es Admin o Técnico
                     if rol_lower in ['admin', 'oficina', 'supervisor']:
                         es_admin = True
                     else:
@@ -202,11 +276,9 @@ def main_app():
     ws_reclamos, _, _ = init_google_sheets()
 
     # Filtros base
-    estados_excluidos = ["Resuelto", "Verificado"]
+    estados_excluidos = ["Resuelto"]
     mask_estado = ~df_reclamos['Estado'].isin(estados_excluidos)
     df_activos = df_reclamos[mask_estado].copy()
-    
-    # Llenar técnicos vacíos para evitar errores
     df_activos['Técnico'] = df_activos['Técnico'].fillna('Sin Asignar')
 
     # =====================================================
@@ -215,39 +287,81 @@ def main_app():
     if es_admin:
         st.markdown("### 👑 Panel de Administración")
         
-        # Obtener lista de técnicos únicos en reclamos activos
+        # --- HERRAMIENTAS ADMIN ---
+        with st.container(border=True):
+            st.markdown("**⚙️ Herramientas de Gestión**")
+            col_p1, col_p2 = st.columns(2)
+            
+            with col_p1:
+                # Botón Generar PDF
+                if st.button("📄 Generar PDF del Día", use_container_width=True):
+                    with st.spinner("Generando PDF..."):
+                        try:
+                            pdf_bytes = generar_pdf(df_activos, datetime.now().strftime("%d/%m/%Y"))
+                            st.download_button(
+                                label="⬇️ Descargar PDF",
+                                data=pdf_bytes,
+                                file_name=f"Reclamos_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                        except Exception as e:
+                            st.error(f"Error al generar PDF: {e}")
+            
+            with col_p2:
+                # Botón Cierre Masivo
+                st.markdown("⚠️ Cerrar todos los **Verificados**")
+                confirmar_cierre = st.checkbox("Estoy seguro de cerrarlos")
+                if st.button("🔒 Cierre Masivo a Resuelto", disabled=not confirmar_cierre, use_container_width=True):
+                    try:
+                        mask_verificados = df_reclamos['Estado'] == "Verificado"
+                        idxs = df_reclamos[mask_verificados].index.tolist()
+                        
+                        if not idxs:
+                            st.warning("No hay reclamos en estado 'Verificado' para cerrar.")
+                        else:
+                            col_idx = df_reclamos.columns.get_loc('Estado') + 1
+                            updates = []
+                            for i in idxs:
+                                sheet_row_num = i + 2
+                                cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
+                                updates.append({
+                                    "range": cell_range,
+                                    "values": [["Resuelto"]]
+                                })
+                            
+                            ws_reclamos.batch_update(updates)
+                            st.cache_data.clear()
+                            st.success(f"¡{len(updates)} reclamos cerrados exitosamente!")
+                            time.sleep(2)
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error en cierre masivo: {e}")
+        
+        st.divider()
+
+        # --- FILTROS Y LISTADO ---
         tecnicos_unicos = sorted(df_activos['Técnico'].unique().tolist())
+        tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
         
-        # Selector de técnico
-        tecnico_seleccionado = st.selectbox(
-            "Filtrar por Técnico", 
-            ["Todos"] + tecnicos_unicos,
-            index=0
-        )
-        
-        # Filtrar DataFrame según selección
         if tecnico_seleccionado == "Todos":
             df_filtrado = df_activos.copy()
         else:
             df_filtrado = df_activos[df_activos['Técnico'] == tecnico_seleccionado].copy()
 
-        # Ordenar
         df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
-        
-        st.markdown(f"**Reclamos en curso: {len(df_filtrado)}**")
+        st.markdown(f"**Reclamos en curso/verificados: {len(df_filtrado)}**")
 
         if df_filtrado.empty:
             st.success("🎉 No hay reclamos pendientes para este filtro.")
             return
 
-        # Si seleccionó "Todos", agrupamos por técnico con acordeones
         if tecnico_seleccionado == "Todos":
             for tecnico, grupo in df_filtrado.groupby('Técnico'):
                 with st.expander(f"👷 {tecnico} ({len(grupo)} reclamos)"):
                     for idx, row in grupo.iterrows():
                         renderizar_tarjeta(row, df_reclamos, ws_reclamos)
         else:
-            # Si filtró por uno solo, mostramos tarjetas directas
             for idx, row in df_filtrado.iterrows():
                 renderizar_tarjeta(row, df_reclamos, ws_reclamos)
 
@@ -255,12 +369,13 @@ def main_app():
     # VISTA TÉCNICO
     # =====================================================
     else:
-        mask_tecnico = df_activos['Técnico'].str.contains(rol, case=False, na=False)
-        mis_reclamos = df_activos[mask_tecnico].copy()
+        # Para técnicos, solo ven los no verificados
+        estados_excluidos_tec = ["Resuelto", "Verificado"]
+        mask_estado_tec = ~df_reclamos['Estado'].isin(estados_excluidos_tec)
+        mask_tecnico = df_reclamos['Técnico'].str.contains(rol, case=False, na=False)
+        mis_reclamos = df_reclamos[mask_tecnico & mask_estado_tec].copy()
 
-        # Ordenar por más viejos
         mis_reclamos = mis_reclamos.sort_values(by='Horas_Transcurridas', ascending=False)
-
         st.markdown(f"### 📋 Reclamos en curso: {len(mis_reclamos)}")
 
         if mis_reclamos.empty:
