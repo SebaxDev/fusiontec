@@ -61,7 +61,6 @@ def cargar_datos():
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
 
-    # Guardar copia raw de clientes para saber la fila exacta al editar
     df_clientes_raw = df_clientes.copy()
 
     # Clientes - Extraer Coordenadas y Precinto
@@ -106,13 +105,11 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
     sheet_row_num = row.name + 2 
     horas = row['Horas_Transcurridas']
 
-    # Badges
     badge = "🟢 Normal"
     if pd.notna(horas):
         if horas >= 48: badge = "🔴 +48 hs"
         elif horas >= 24: badge = "🟡 +24 hs"
 
-    # Datos
     direccion = str(row.get('Dirección', 'Sin dirección')) if pd.notna(row.get('Dirección')) else 'Sin dirección'
     telefono = str(row.get('Teléfono', 'Sin teléfono')) if pd.notna(row.get('Teléfono')) else 'Sin teléfono'
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
@@ -121,19 +118,16 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
     nombre_cliente = str(row.get('Nombre', ''))
     nro_cliente = str(row.get('Nº Cliente', ''))
     
-    # Precinto desde la hoja Clientes (merge)
     precinto = ''
     if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '']:
         precinto = str(row.get('precinto_cliente'))
 
-    # Tiempo
     if pd.notna(horas):
         if horas < 1: texto_tiempo = f"hace {int(horas * 60)} min"
         elif horas < 24: texto_tiempo = f"hace {int(horas)} hs"
         else: texto_tiempo = f"hace {int(horas / 24)} días"
     else: texto_tiempo = "Fecha inválida"
 
-    # Tarjeta
     with st.container(border=True):
         col1, col2 = st.columns([4, 1])
         with col1: st.markdown(f"### 🎫 Nº {row['Nº Cliente']} - {nombre_cliente}")
@@ -147,13 +141,11 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
 
         if detalles: st.info(f"📝 Detalles: {detalles}")
 
-        # --- PRECINTO ---
         if precinto: 
             st.markdown(f"🔒 **Precinto:** {precinto}")
         else:
             st.caption("🔒 Precinto: No registrado")
 
-        # --- UBICACIÓN ---
         tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
         if tiene_ubicacion:
             maps_url = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
@@ -161,9 +153,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
         else:
             st.caption("📍 Sin ubicación registrada")
 
-        # =================================================
-        # ADMIN: EDITAR PRECINTO Y UBICACIÓN DEL CLIENTE
-        # =================================================
         if es_admin and ws_clientes is not None and df_clientes_raw is not None:
             df_cl = df_clientes_raw.copy()
             df_cl['Nº Cliente'] = df_cl['Nº Cliente'].astype(str).str.strip()
@@ -225,7 +214,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                     except Exception as e:
                                         st.error(f"❌ Error: {e}")
 
-        # --- BOTÓN VERIFICAR ---
         if st.button("✅ Verificar Trabajo", key=f"verify_{sheet_row_num}", use_container_width=True):
             try:
                 col_idx = df_reclamos.columns.get_loc('Estado') + 1
@@ -256,7 +244,6 @@ def generar_pdf(df, fecha_str):
     pdf.set_auto_page_break(auto=False) 
     pdf.add_page()
 
-    # 2 columnas de 90mm
     col_width = 90
     margin_x = 10
     margin_y = 20
@@ -306,18 +293,15 @@ def generar_pdf(df, fecha_str):
 
             pdf.set_xy(current_x, current_y)
             
-            # Parte 1: "1234 - " (normal)
             pdf.set_font('Helvetica', '', 8)
             parte1 = f"{nro_cliente_safe} - "
             w1 = pdf.get_string_width(parte1)
             pdf.cell(w1, 4, parte1, 0, 0)
             
-            # Parte 2: Status en negrita
             pdf.set_font('Helvetica', 'B', 8)
             w2 = pdf.get_string_width(status)
             pdf.cell(w2, 4, status, 0, 0)
             
-            # Parte 3: " - Conexion C+I" (normal)
             pdf.set_font('Helvetica', '', 8)
             parte3 = f" - {tipo_safe}"
             w3 = col_width - w1 - w2
@@ -328,7 +312,6 @@ def generar_pdf(df, fecha_str):
                 parte3 = parte3.rstrip(' -.') + ".."
             
             pdf.cell(w3, 4, parte3, 0, 1)
-            
             current_y += 5
 
     return bytes(pdf.output())
@@ -370,7 +353,7 @@ def login_screen():
 
 # =========================================================
 # APP PRINCIPAL
-# =====================================================
+# =========================================================
 def main_app():
     es_admin = st.session_state.get('es_admin', False)
     rol = st.session_state.rol
@@ -394,7 +377,6 @@ def main_app():
     df_reclamos, _, df_clientes_raw = cargar_datos()
     ws_reclamos, ws_clientes, _ = init_google_sheets()
 
-    # Filtros base
     mask_tecnico_asignado = df_reclamos['Tecnico_Limpio'].notna()
 
     # =====================================================
@@ -406,10 +388,10 @@ def main_app():
         # --- HERRAMIENTAS ADMIN ---
         with st.container(border=True):
             st.markdown("**⚙️ Herramientas de Gestión**")
-            col_p1, col_p2 = st.columns(2)
+            col_p1, col_p2, col_p3 = st.columns(3)
             
             with col_p1:
-                if st.button("📄 Generar PDF del Día", use_container_width=True):
+                if st.button("📄 Generar PDF", use_container_width=True):
                     with st.spinner("Generando PDF..."):
                         try:
                             estados_pdf = ["En curso", "Verificado"]
@@ -428,15 +410,15 @@ def main_app():
                             st.error(f"Error al generar PDF: {e}")
             
             with col_p2:
-                st.markdown("⚠️ Cerrar todos los **Verificados**")
-                confirmar_cierre = st.checkbox("Estoy seguro de cerrarlos")
-                if st.button("🔒 Cierre Masivo a Resuelto", disabled=not confirmar_cierre, use_container_width=True):
+                st.markdown("🔒 Verificados → Resuelto")
+                confirmar_cierre = st.checkbox("Confirmar cierre", key="chk_cierre")
+                if st.button("🔒 Cierre Masivo", disabled=not confirmar_cierre, use_container_width=True):
                     try:
                         mask_verificados = df_reclamos['Estado_Limpio'] == "Verificado"
                         idxs = df_reclamos[mask_verificados].index.tolist()
                         
                         if not idxs:
-                            st.warning("No hay reclamos en estado 'Verificado' para cerrar.")
+                            st.warning("No hay reclamos 'Verificado' para cerrar.")
                         else:
                             col_idx = df_reclamos.columns.get_loc('Estado') + 1
                             updates = []
@@ -447,11 +429,37 @@ def main_app():
                             
                             ws_reclamos.batch_update(updates)
                             st.cache_data.clear()
-                            st.success(f"¡{len(updates)} reclamos cerrados exitosamente!")
+                            st.success(f"¡{len(updates)} reclamos cerrados como Resuelto!")
                             time.sleep(2)
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error en cierre masivo: {e}")
+            
+            with col_p3:
+                st.markdown("⏸️ En Curso → Pendiente")
+                confirmar_pendiente = st.checkbox("Confirmar pase", key="chk_pendiente")
+                if st.button("⏸️ Pasar a Pendiente", disabled=not confirmar_pendiente, use_container_width=True):
+                    try:
+                        mask_en_curso = df_reclamos['Estado_Limpio'] == "En curso"
+                        idxs = df_reclamos[mask_en_curso].index.tolist()
+                        
+                        if not idxs:
+                            st.warning("No hay reclamos 'En curso' para pasar.")
+                        else:
+                            col_idx = df_reclamos.columns.get_loc('Estado') + 1
+                            updates = []
+                            for i in idxs:
+                                sheet_row_num = i + 2
+                                cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
+                                updates.append({"range": cell_range, "values": [["Pendiente"]]})
+                            
+                            ws_reclamos.batch_update(updates)
+                            st.cache_data.clear()
+                            st.success(f"¡{len(updates)} reclamos pasados a Pendiente!")
+                            time.sleep(2)
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al pasar a Pendiente: {e}")
         
         st.divider()
 
