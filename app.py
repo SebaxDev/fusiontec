@@ -54,7 +54,7 @@ def init_google_sheets():
 # =========================================================
 # CARGA DE DATOS
 # =========================================================
-@st.cache_data(ttl=120)
+@st_cache_data(ttl=120)
 def cargar_datos():
     ws_reclamos, ws_clientes, ws_usuarios = init_google_sheets()
     df_reclamos = pd.DataFrame(ws_reclamos.get_all_records())
@@ -261,11 +261,13 @@ def generar_pdf(df, fecha_str):
     pdf.set_auto_page_break(auto=False) 
     pdf.add_page()
 
-    col_width = 60
+    # 2 columnas
+    col_width = 90
     margin_x = 10
     margin_y = 20
-    bottom_limit = 270 
-    cols_x = [margin_x, margin_x + col_width + 5, margin_x + 2*(col_width + 5)]
+    bottom_limit = 275
+    gap = 10
+    cols_x = [margin_x, margin_x + col_width + gap]
     
     current_col = 0
     current_x = cols_x[current_col]
@@ -281,7 +283,7 @@ def generar_pdf(df, fecha_str):
 
         if current_y + block_height > bottom_limit:
             current_col += 1
-            if current_col > 2:
+            if current_col > 1:
                 pdf.add_page()
                 current_col = 0
             current_x = cols_x[current_col]
@@ -297,7 +299,7 @@ def generar_pdf(df, fecha_str):
         for idx, row in df_tec.iterrows():
             if current_y > bottom_limit:
                 current_col += 1
-                if current_col > 2:
+                if current_col > 1:
                     pdf.add_page()
                     current_col = 0
                 current_x = cols_x[current_col]
@@ -305,11 +307,35 @@ def generar_pdf(df, fecha_str):
 
             status = "OK" if row['Estado_Limpio'] == "Verificado" else "Pendiente"
             nro_cliente_safe = str(row['Nº Cliente']).encode('latin-1', 'replace').decode('latin-1')
-            text = f"{nro_cliente_safe} - {status}"
+            tipo_safe = str(row.get('Tipo de reclamo', '')).encode('latin-1', 'replace').decode('latin-1')
 
+            # Línea: 1234 - OK - Conexion C+I
             pdf.set_xy(current_x, current_y)
+            
+            # Parte 1: "1234 - " (normal)
             pdf.set_font('Helvetica', '', 8)
-            pdf.cell(col_width, 4, text, 0, 1)
+            parte1 = f"{nro_cliente_safe} - "
+            w1 = pdf.get_string_width(parte1)
+            pdf.cell(w1, 4, parte1, 0, 0)
+            
+            # Parte 2: Status en negrita
+            pdf.set_font('Helvetica', 'B', 8)
+            w2 = pdf.get_string_width(status)
+            pdf.cell(w2, 4, status, 0, 0)
+            
+            # Parte 3: " - Conexion C+I" (normal)
+            pdf.set_font('Helvetica', '', 8)
+            parte3 = f" - {tipo_safe}"
+            w3 = col_width - w1 - w2  # ancho restante de la columna
+            
+            # Truncar si el texto supera el ancho disponible
+            if pdf.get_string_width(parte3) > w3:
+                while pdf.get_string_width(parte3 + "..") > w3 and len(parte3) > 4:
+                    parte3 = parte3[:-1]
+                parte3 = parte3.rstrip(' -.') + ".."
+            
+            pdf.cell(w3, 4, parte3, 0, 1)
+            
             current_y += 5
 
     return bytes(pdf.output())
