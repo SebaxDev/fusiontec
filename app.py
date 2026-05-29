@@ -54,7 +54,7 @@ def init_google_sheets():
 # =========================================================
 # CARGA DE DATOS
 # =========================================================
-@st_cache_data(ttl=120)
+@st.cache_data(ttl=120)
 def cargar_datos():
     ws_reclamos, ws_clientes, ws_usuarios = init_google_sheets()
     df_reclamos = pd.DataFrame(ws_reclamos.get_all_records())
@@ -165,20 +165,17 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
         # ADMIN: EDITAR PRECINTO Y UBICACIÓN DEL CLIENTE
         # =================================================
         if es_admin and ws_clientes is not None and df_clientes_raw is not None:
-            # Buscar la fila del cliente en la hoja Clientes
             df_cl = df_clientes_raw.copy()
             df_cl['Nº Cliente'] = df_cl['Nº Cliente'].astype(str).str.strip()
             cliente_match = df_cl[df_cl['Nº Cliente'] == nro_cliente]
             
             if not cliente_match.empty:
-                cliente_fila = cliente_match.index[0] + 2  # +2: header + base-1
+                cliente_fila = cliente_match.index[0] + 2
                 
-                # Si falta precinto o ubicación, mostrar sección de edición
                 if not precinto or not tiene_ubicacion:
                     st.markdown("---")
                     st.markdown("**✏️ Completar datos del cliente**")
                     
-                    # --- Formulario Precinto (solo si no tiene) ---
                     if not precinto:
                         with st.form(f"form_precinto_{nro_cliente}_{sheet_row_num}"):
                             new_precinto = st.text_input("N° de Precinto", key=f"pint_{nro_cliente}_{sheet_row_num}")
@@ -188,7 +185,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                     st.error("❌ Ingresá un número de precinto.")
                                 else:
                                     try:
-                                        cell = gspread.utils.rowcol_to_a1(cliente_fila, 6)  # Columna F
+                                        cell = gspread.utils.rowcol_to_a1(cliente_fila, 6)
                                         ws_clientes.batch_update([{"range": cell, "values": [[new_precinto.strip()]]}])
                                         st.cache_data.clear()
                                         st.success("✅ Precinto guardado.")
@@ -197,10 +194,8 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                     except Exception as e:
                                         st.error(f"❌ Error: {e}")
                     
-                    # --- Formulario Ubicación (solo si no tiene) ---
                     if not tiene_ubicacion:
                         with st.form(f"form_geo_{nro_cliente}_{sheet_row_num}"):
-                            # Prefijos zona para acelerar carga
                             lat_raw = str(cliente_match.iloc[0].get('Latitud', '')).strip()
                             lon_raw = str(cliente_match.iloc[0].get('Longitud', '')).strip()
                             val_lat = lat_raw if lat_raw not in ("nan", "None", "") else "-26."
@@ -261,7 +256,7 @@ def generar_pdf(df, fecha_str):
     pdf.set_auto_page_break(auto=False) 
     pdf.add_page()
 
-    # 2 columnas
+    # 2 columnas de 90mm
     col_width = 90
     margin_x = 10
     margin_y = 20
@@ -309,7 +304,6 @@ def generar_pdf(df, fecha_str):
             nro_cliente_safe = str(row['Nº Cliente']).encode('latin-1', 'replace').decode('latin-1')
             tipo_safe = str(row.get('Tipo de reclamo', '')).encode('latin-1', 'replace').decode('latin-1')
 
-            # Línea: 1234 - OK - Conexion C+I
             pdf.set_xy(current_x, current_y)
             
             # Parte 1: "1234 - " (normal)
@@ -326,9 +320,8 @@ def generar_pdf(df, fecha_str):
             # Parte 3: " - Conexion C+I" (normal)
             pdf.set_font('Helvetica', '', 8)
             parte3 = f" - {tipo_safe}"
-            w3 = col_width - w1 - w2  # ancho restante de la columna
+            w3 = col_width - w1 - w2
             
-            # Truncar si el texto supera el ancho disponible
             if pdf.get_string_width(parte3) > w3:
                 while pdf.get_string_width(parte3 + "..") > w3 and len(parte3) > 4:
                     parte3 = parte3[:-1]
@@ -377,7 +370,7 @@ def login_screen():
 
 # =========================================================
 # APP PRINCIPAL
-# =========================================================
+# =====================================================
 def main_app():
     es_admin = st.session_state.get('es_admin', False)
     rol = st.session_state.rol
@@ -486,7 +479,6 @@ def main_app():
         df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
 
         if tecnico_seleccionado == "Todos":
-            # Total general
             total_en_curso = len(df_filtrado)
             total_verificados = sum(verificados_por_tecnico.get(t, 0) for t in tecnicos_unicos)
             total_general = total_en_curso + total_verificados
