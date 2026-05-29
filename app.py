@@ -61,28 +61,28 @@ def cargar_datos():
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
 
+    # Guardar copia raw de clientes para saber la fila exacta al editar
+    df_clientes_raw = df_clientes.copy()
+
     # Clientes - Extraer Coordenadas y Precinto
     df_c = df_clientes.rename(columns={
         'Nº Cliente': 'nro_cliente_cli', 
         'Latitud': 'lat', 
         'Longitud': 'lon',
-        'N° de Precinto': 'precinto_cliente' # Nuevo campo
+        'N° de Precinto': 'precinto_cliente'
     })
     df_c['nro_cliente_cli'] = df_c['nro_cliente_cli'].astype(str)
     df_c['lat'] = pd.to_numeric(df_c['lat'].astype(str).str.replace(',', '.'), errors='coerce')
     df_c['lon'] = pd.to_numeric(df_c['lon'].astype(str).str.replace(',', '.'), errors='coerce')
     
-    # Limpiar precinto (si es '*' o vacío, que sea nulo para no mostrarlo)
     df_c['precinto_cliente'] = df_c['precinto_cliente'].replace(['*', '', ' '], np.nan)
 
-    # Seleccionar columnas y eliminar duplicados por si hay inconsistencias
     datos_cliente = df_c[['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente']].drop_duplicates(subset=['nro_cliente_cli'])
 
     # Reclamos
     df_r = df_reclamos.copy()
     df_r['Nº Cliente'] = df_r['Nº Cliente'].astype(str)
     
-    # Merge: Agregamos lat, lon y precinto_cliente
     df_r = df_r.merge(datos_cliente, left_on='Nº Cliente', right_on='nro_cliente_cli', how='left')
 
     # Fechas
@@ -97,12 +97,12 @@ def cargar_datos():
     df_r['Tecnico_Limpio'] = df_r['Técnico'].astype(str).str.strip()
     df_r['Tecnico_Limpio'] = df_r['Tecnico_Limpio'].replace('', np.nan)
 
-    return df_r, df_usuarios
+    return df_r, df_usuarios, df_clientes_raw
 
 # =========================================================
 # FUNCIÓN PARA DIBUJAR TARJETAS
 # =========================================================
-def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
+def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_clientes=None, df_clientes_raw=None):
     sheet_row_num = row.name + 2 
     horas = row['Horas_Transcurridas']
 
@@ -119,8 +119,9 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
     detalles = str(row.get('Detalles', '')) if pd.notna(row.get('Detalles')) and str(row.get('Detalles')) != '*' else ''
     sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
     nombre_cliente = str(row.get('Nombre', ''))
+    nro_cliente = str(row.get('Nº Cliente', ''))
     
-    # Precinto: Ahora se toma de la hoja de Clientes (merge)
+    # Precinto desde la hoja Clientes (merge)
     precinto = ''
     if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '']:
         precinto = str(row.get('precinto_cliente'))
@@ -145,15 +146,91 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos):
         st.markdown(f"⚙️ **Reclamo:** {tipo_reclamo}")
 
         if detalles: st.info(f"📝 Detalles: {detalles}")
-        if precinto: st.warning(f"🔒 Precinto del Cliente: {precinto}") # Cambio de texto para aclarar
 
+        # --- PRECINTO ---
+        if precinto: 
+            st.markdown(f"🔒 **Precinto:** {precinto}")
+        else:
+            st.caption("🔒 Precinto: No registrado")
+
+        # --- UBICACIÓN ---
         tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
         if tiene_ubicacion:
             maps_url = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
             st.link_button("📍 Abrir ubicación en Google Maps", maps_url, use_container_width=True)
         else:
-            st.caption("❌ Sin ubicación")
+            st.caption("📍 Sin ubicación registrada")
 
+        # =================================================
+        # ADMIN: EDITAR PRECINTO Y UBICACIÓN DEL CLIENTE
+        # =================================================
+        if es_admin and ws_clientes is not None and df_clientes_raw is not None:
+            # Buscar la fila del cliente en la hoja Clientes
+            df_cl = df_clientes_raw.copy()
+            df_cl['Nº Cliente'] = df_cl['Nº Cliente'].astype(str).str.strip()
+            cliente_match = df_cl[df_cl['Nº Cliente'] == nro_cliente]
+            
+            if not cliente_match.empty:
+                cliente_fila = cliente_match.index[0] + 2  # +2: header + base-1
+                
+                # Si falta precinto o ubicación, mostrar sección de edición
+                if not precinto or not tiene_ubicacion:
+                    st.markdown("---")
+                    st.markdown("**✏️ Completar datos del cliente**")
+                    
+                    # --- Formulario Precinto (solo si no tiene) ---
+                    if not precinto:
+                        with st.form(f"form_precinto_{nro_cliente}_{sheet_row_num}"):
+                            new_precinto = st.text_input("N° de Precinto", key=f"pint_{nro_cliente}_{sheet_row_num}")
+                            submit_p = st.form_submit_button("💾 Guardar Precinto")
+                            if submit_p:
+                                if not new_precinto.strip():
+                                    st.error("❌ Ingresá un número de precinto.")
+                                else:
+                                    try:
+                                        cell = gspread.utils.rowcol_to_a1(cliente_fila, 6)  # Columna F
+                                        ws_clientes.batch_update([{"range": cell, "values": [[new_precinto.strip()]]}])
+                                        st.cache_data.clear()
+                                        st.success("✅ Precinto guardado.")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Error: {e}")
+                    
+                    # --- Formulario Ubicación (solo si no tiene) ---
+                    if not tiene_ubicacion:
+                        with st.form(f"form_geo_{nro_cliente}_{sheet_row_num}"):
+                            # Prefijos zona para acelerar carga
+                            lat_raw = str(cliente_match.iloc[0].get('Latitud', '')).strip()
+                            lon_raw = str(cliente_match.iloc[0].get('Longitud', '')).strip()
+                            val_lat = lat_raw if lat_raw not in ("nan", "None", "") else "-26."
+                            val_lon = lon_raw if lon_raw not in ("nan", "None", "") else "-59."
+                            
+                            new_lat = st.text_input("Latitud", value=val_lat, key=f"lt_{nro_cliente}_{sheet_row_num}")
+                            new_lon = st.text_input("Longitud", value=val_lon, key=f"ln_{nro_cliente}_{sheet_row_num}")
+                            submit_g = st.form_submit_button("💾 Guardar Coordenadas")
+                            if submit_g:
+                                if not new_lat.strip() or not new_lon.strip():
+                                    st.error("❌ Completá ambos campos.")
+                                else:
+                                    try:
+                                        float(new_lat.strip().replace(',', '.'))
+                                        float(new_lon.strip().replace(',', '.'))
+                                        updates = [
+                                            {"range": gspread.utils.rowcol_to_a1(cliente_fila, 10), "values": [[new_lat.strip()]]},
+                                            {"range": gspread.utils.rowcol_to_a1(cliente_fila, 11), "values": [[new_lon.strip()]]}
+                                        ]
+                                        ws_clientes.batch_update(updates)
+                                        st.cache_data.clear()
+                                        st.success("✅ Coordenadas guardadas.")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    except ValueError:
+                                        st.error("❌ Las coordenadas deben ser numéricas (ej: -26.123456).")
+                                    except Exception as e:
+                                        st.error(f"❌ Error: {e}")
+
+        # --- BOTÓN VERIFICAR ---
         if st.button("✅ Verificar Trabajo", key=f"verify_{sheet_row_num}", use_container_width=True):
             try:
                 col_idx = df_reclamos.columns.get_loc('Estado') + 1
@@ -250,7 +327,7 @@ def login_screen():
 
         if submit:
             try:
-                _, df_usuarios = cargar_datos()
+                _, df_usuarios, _ = cargar_datos()
                 user_row = df_usuarios[(df_usuarios['username'] == username) & (df_usuarios['password'] == password)]
                 
                 if not user_row.empty:
@@ -295,10 +372,10 @@ def main_app():
     st.divider()
 
     # Datos
-    df_reclamos, _ = cargar_datos()
-    ws_reclamos, _, _ = init_google_sheets()
+    df_reclamos, _, df_clientes_raw = cargar_datos()
+    ws_reclamos, ws_clientes, _ = init_google_sheets()
 
-    # Filtros base y técnicos asignados
+    # Filtros base
     mask_tecnico_asignado = df_reclamos['Tecnico_Limpio'].notna()
 
     # =====================================================
@@ -316,7 +393,6 @@ def main_app():
                 if st.button("📄 Generar PDF del Día", use_container_width=True):
                     with st.spinner("Generando PDF..."):
                         try:
-                            # Para el PDF, sí incluimos los Verificados para que quede el registro del día
                             estados_pdf = ["En curso", "Verificado"]
                             mask_pdf = df_reclamos['Estado_Limpio'].isin(estados_pdf)
                             df_activos_pdf = df_reclamos[mask_pdf & mask_tecnico_asignado].copy()
@@ -360,7 +436,11 @@ def main_app():
         
         st.divider()
 
-        # --- LISTADO ADMIN (Solo ve "En curso", al verificar desaparece) ---
+        # --- CONTADORES POR TÉCNICO ---
+        mask_verificados_tec = (df_reclamos['Estado_Limpio'] == "Verificado") & mask_tecnico_asignado
+        verificados_por_tecnico = df_reclamos[mask_verificados_tec].groupby('Tecnico_Limpio').size().to_dict()
+
+        # --- LISTADO ADMIN (Solo "En curso") ---
         estados_display = ["En curso"]
         mask_estado_display = df_reclamos['Estado_Limpio'].isin(estados_display)
         df_activos_display = df_reclamos[mask_estado_display & mask_tecnico_asignado].copy()
@@ -378,16 +458,35 @@ def main_app():
             df_filtrado = df_activos_display[df_activos_display['Tecnico_Limpio'] == tecnico_seleccionado].copy()
 
         df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
-        st.markdown(f"**Reclamos en curso: {len(df_filtrado)}**")
 
         if tecnico_seleccionado == "Todos":
+            # Total general
+            total_en_curso = len(df_filtrado)
+            total_verificados = sum(verificados_por_tecnico.get(t, 0) for t in tecnicos_unicos)
+            total_general = total_en_curso + total_verificados
+            st.markdown(f"**Total: {total_general} (En Curso {total_en_curso} + Verificados {total_verificados})**")
+            
             for tecnico, grupo in df_filtrado.groupby('Tecnico_Limpio'):
-                with st.expander(f"👷 {tecnico} ({len(grupo)} reclamos)"):
+                en_curso = len(grupo)
+                verificados = verificados_por_tecnico.get(tecnico, 0)
+                total = en_curso + verificados
+                with st.expander(f"👷 {tecnico} {total} (En Curso {en_curso} + Verificados {verificados})"):
                     for idx, row in grupo.iterrows():
-                        renderizar_tarjeta(row, df_reclamos, ws_reclamos)
+                        renderizar_tarjeta(
+                            row, df_reclamos, ws_reclamos, 
+                            es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
+                        )
         else:
+            en_curso = len(df_filtrado)
+            verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
+            total = en_curso + verificados
+            st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {verificados})**")
+            
             for idx, row in df_filtrado.iterrows():
-                renderizar_tarjeta(row, df_reclamos, ws_reclamos)
+                renderizar_tarjeta(
+                    row, df_reclamos, ws_reclamos, 
+                    es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
+                )
 
     # =====================================================
     # VISTA TÉCNICO
@@ -406,7 +505,7 @@ def main_app():
             return
 
         for idx, row in mis_reclamos.iterrows():
-            renderizar_tarjeta(row, df_reclamos, ws_reclamos)
+            renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False)
 
 # =========================================================
 # FLUJO PRINCIPAL
