@@ -17,13 +17,10 @@ try:
 except ImportError:
     COOKIE_AVAILABLE = False
 
-@st.cache_resource
-def get_cookie_manager():
-    if COOKIE_AVAILABLE:
-        return stx.CookieManager()
-    return None
-
-cookie_manager = get_cookie_manager()
+if COOKIE_AVAILABLE:
+    cookie_manager = stx.CookieManager()
+else:
+    cookie_manager = None
 
 def save_cookie(key, value, days=30):
     if COOKIE_AVAILABLE and cookie_manager:
