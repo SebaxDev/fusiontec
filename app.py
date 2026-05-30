@@ -26,6 +26,7 @@ SHEET_ID = "13R_3Mdr25Jd-nGhK7CxdcbKkFWLc0LPdYrOLOY8sZJo"
 WORKSHEET_RECLAMOS = "Reclamos"
 WORKSHEET_CLIENTES = "Clientes"
 WORKSHEET_USUARIOS = "usuarios"
+WORKSHEET_NOVEDADES = "Novedades"
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -51,10 +52,19 @@ def init_google_sheets():
             scopes=SCOPES
         )
         client = gspread.authorize(creds)
-        ws_reclamos = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_RECLAMOS)
-        ws_clientes = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_CLIENTES)
-        ws_usuarios = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_USUARIOS)
-        return ws_reclamos, ws_clientes, ws_usuarios
+        spreadsheet = client.open_by_key(SHEET_ID)
+        ws_reclamos = spreadsheet.worksheet(WORKSHEET_RECLAMOS)
+        ws_clientes = spreadsheet.worksheet(WORKSHEET_CLIENTES)
+        ws_usuarios = spreadsheet.worksheet(WORKSHEET_USUARIOS)
+        
+        # Crear hoja Novedades si no existe
+        try:
+            ws_novedades = spreadsheet.worksheet(WORKSHEET_NOVEDADES)
+        except gspread.exceptions.WorksheetNotFound:
+            ws_novedades = spreadsheet.add_worksheet(title=WORKSHEET_NOVEDADES, rows=10, cols=2)
+            ws_novedades.update('A1:B1', [['Fecha', 'Mensaje']])
+        
+        return ws_reclamos, ws_clientes, ws_usuarios, ws_novedades
     except Exception as e:
         st.error(f"Error de conexión: {e}")
         st.stop()
@@ -64,10 +74,16 @@ def init_google_sheets():
 # =========================================================
 @st.cache_data(ttl=120)
 def cargar_datos():
-    ws_reclamos, ws_clientes, ws_usuarios = init_google_sheets()
+    ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
     df_reclamos = pd.DataFrame(ws_reclamos.get_all_records())
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+    
+    # Novedades
+    try:
+        df_novedades = pd.DataFrame(ws_novedades.get_all_records())
+    except:
+        df_novedades = pd.DataFrame(columns=['Fecha', 'Mensaje'])
 
     df_clientes_raw = df_clientes.copy()
 
@@ -104,7 +120,7 @@ def cargar_datos():
     df_r['Tecnico_Limpio'] = df_r['Técnico'].astype(str).str.strip()
     df_r['Tecnico_Limpio'] = df_r['Tecnico_Limpio'].replace('', np.nan)
 
-    return df_r, df_usuarios, df_clientes_raw
+    return df_r, df_usuarios, df_clientes_raw, df_novedades
 
 # =========================================================
 # FUNCIÓN PARA DIBUJAR TARJETAS
@@ -136,6 +152,15 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
         else: texto_tiempo = f"hace {int(horas / 24)} días"
     else: texto_tiempo = "Fecha inválida"
 
+    # Buscar fila del cliente (para admin y observaciones)
+    cliente_fila = None
+    if ws_clientes is not None and df_clientes_raw is not None:
+        df_cl = df_clientes_raw.copy()
+        df_cl['Nº Cliente'] = df_cl['Nº Cliente'].astype(str).str.strip()
+        cliente_match = df_cl[df_cl['Nº Cliente'] == nro_cliente]
+        if not cliente_match.empty:
+            cliente_fila = cliente_match.index[0] + 2
+
     with st.container(border=True):
         col1, col2 = st.columns([4, 1])
         with col1: st.markdown(f"### 🎫 Nº {row['Nº Cliente']} - {nombre_cliente}")
@@ -161,77 +186,103 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
         else:
             st.caption("📍 Sin ubicación registrada")
 
-        if es_admin and ws_clientes is not None and df_clientes_raw is not None:
-            df_cl = df_clientes_raw.copy()
-            df_cl['Nº Cliente'] = df_cl['Nº Cliente'].astype(str).str.strip()
-            cliente_match = df_cl[df_cl['Nº Cliente'] == nro_cliente]
-            
-            if not cliente_match.empty:
-                cliente_fila = cliente_match.index[0] + 2
+        # =============================================
+        # ADMIN: EDITAR PRECINTO Y UBICACIÓN
+        # =============================================
+        if es_admin and cliente_fila is not None:
+            if not precinto or not tiene_ubicacion:
+                st.markdown("---")
+                st.markdown("**✏️ Completar datos del cliente**")
                 
-                if not precinto or not tiene_ubicacion:
-                    st.markdown("---")
-                    st.markdown("**✏️ Completar datos del cliente**")
-                    
-                    if not precinto:
-                        with st.form(f"form_precinto_{nro_cliente}_{sheet_row_num}"):
-                            new_precinto = st.text_input("N° de Precinto", key=f"pint_{nro_cliente}_{sheet_row_num}")
-                            submit_p = st.form_submit_button("💾 Guardar Precinto")
-                            if submit_p:
-                                if not new_precinto.strip():
-                                    st.error("❌ Ingresá un número de precinto.")
-                                else:
-                                    try:
-                                        cell = gspread.utils.rowcol_to_a1(cliente_fila, 6)
-                                        ws_clientes.batch_update([{"range": cell, "values": [[new_precinto.strip()]]}])
-                                        st.cache_data.clear()
-                                        st.success("✅ Precinto guardado.")
-                                        time.sleep(1)
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"❌ Error: {e}")
-                    
-                    if not tiene_ubicacion:
-                        with st.form(f"form_geo_{nro_cliente}_{sheet_row_num}"):
-                            lat_raw = str(cliente_match.iloc[0].get('Latitud', '')).strip()
-                            lon_raw = str(cliente_match.iloc[0].get('Longitud', '')).strip()
-                            val_lat = lat_raw if lat_raw not in ("nan", "None", "") else "-26."
-                            val_lon = lon_raw if lon_raw not in ("nan", "None", "") else "-59."
-                            
-                            new_lat = st.text_input("Latitud", value=val_lat, key=f"lt_{nro_cliente}_{sheet_row_num}")
-                            new_lon = st.text_input("Longitud", value=val_lon, key=f"ln_{nro_cliente}_{sheet_row_num}")
-                            submit_g = st.form_submit_button("💾 Guardar Coordenadas")
-                            if submit_g:
-                                if not new_lat.strip() or not new_lon.strip():
-                                    st.error("❌ Completá ambos campos.")
-                                else:
-                                    try:
-                                        float(new_lat.strip().replace(',', '.'))
-                                        float(new_lon.strip().replace(',', '.'))
-                                        updates = [
-                                            {"range": gspread.utils.rowcol_to_a1(cliente_fila, 10), "values": [[new_lat.strip()]]},
-                                            {"range": gspread.utils.rowcol_to_a1(cliente_fila, 11), "values": [[new_lon.strip()]]}
-                                        ]
-                                        ws_clientes.batch_update(updates)
-                                        st.cache_data.clear()
-                                        st.success("✅ Coordenadas guardadas.")
-                                        time.sleep(1)
-                                        st.rerun()
-                                    except ValueError:
-                                        st.error("❌ Las coordenadas deben ser numéricas (ej: -26.123456).")
-                                    except Exception as e:
-                                        st.error(f"❌ Error: {e}")
+                if not precinto:
+                    with st.form(f"form_precinto_{nro_cliente}_{sheet_row_num}"):
+                        new_precinto = st.text_input("N° de Precinto", key=f"pint_{nro_cliente}_{sheet_row_num}")
+                        submit_p = st.form_submit_button("💾 Guardar Precinto")
+                        if submit_p:
+                            if not new_precinto.strip():
+                                st.error("❌ Ingresá un número de precinto.")
+                            else:
+                                try:
+                                    cell = gspread.utils.rowcol_to_a1(cliente_fila, 6)
+                                    ws_clientes.batch_update([{"range": cell, "values": [[new_precinto.strip()]]}])
+                                    st.cache_data.clear()
+                                    st.success("✅ Precinto guardado.")
+                                    time.sleep(1)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Error: {e}")
+                
+                if not tiene_ubicacion:
+                    with st.form(f"form_geo_{nro_cliente}_{sheet_row_num}"):
+                        lat_raw = str(cliente_match.iloc[0].get('Latitud', '')).strip()
+                        lon_raw = str(cliente_match.iloc[0].get('Longitud', '')).strip()
+                        val_lat = lat_raw if lat_raw not in ("nan", "None", "") else "-26."
+                        val_lon = lon_raw if lon_raw not in ("nan", "None", "") else "-59."
+                        
+                        new_lat = st.text_input("Latitud", value=val_lat, key=f"lt_{nro_cliente}_{sheet_row_num}")
+                        new_lon = st.text_input("Longitud", value=val_lon, key=f"ln_{nro_cliente}_{sheet_row_num}")
+                        submit_g = st.form_submit_button("💾 Guardar Coordenadas")
+                        if submit_g:
+                            if not new_lat.strip() or not new_lon.strip():
+                                st.error("❌ Completá ambos campos.")
+                            else:
+                                try:
+                                    float(new_lat.strip().replace(',', '.'))
+                                    float(new_lon.strip().replace(',', '.'))
+                                    updates = [
+                                        {"range": gspread.utils.rowcol_to_a1(cliente_fila, 10), "values": [[new_lat.strip()]]},
+                                        {"range": gspread.utils.rowcol_to_a1(cliente_fila, 11), "values": [[new_lon.strip()]]}
+                                    ]
+                                    ws_clientes.batch_update(updates)
+                                    st.cache_data.clear()
+                                    st.success("✅ Coordenadas guardadas.")
+                                    time.sleep(1)
+                                    st.rerun()
+                                except ValueError:
+                                    st.error("❌ Las coordenadas deben ser numéricas (ej: -26.123456).")
+                                except Exception as e:
+                                    st.error(f"❌ Error: {e}")
 
-        if st.button("✅ Verificar Trabajo", key=f"verify_{sheet_row_num}", use_container_width=True):
-            try:
-                col_idx = df_reclamos.columns.get_loc('Estado') + 1
-                ws_reclamos.update_cell(sheet_row_num, col_idx, "Verificado")
-                st.cache_data.clear()
-                st.success("¡Reclamo verificado!")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error al actualizar: {e}")
+        # =============================================
+        # OBSERVACIÓN + VERIFICAR (para todos)
+        # =============================================
+        st.markdown("---")
+        with st.form(f"form_verify_{sheet_row_num}"):
+            obs = st.text_input(
+                "📝 Observación", 
+                placeholder="Ej: Caja con mala señal",
+                key=f"obs_{sheet_row_num}"
+            )
+            submit_verify = st.form_submit_button("✅ Verificar Trabajo", use_container_width=True)
+            
+            if submit_verify:
+                try:
+                    # 1. Cambiar estado a Verificado
+                    col_idx = df_reclamos.columns.get_loc('Estado') + 1
+                    ws_reclamos.update_cell(sheet_row_num, col_idx, "Verificado")
+                    
+                    # 2. Guardar observación en columna I del Cliente
+                    if obs.strip() and cliente_fila is not None:
+                        tz_arg = timezone(timedelta(hours=-3))
+                        ahora = datetime.now(tz_arg)
+                        fecha_obs = f"{ahora.day}/{ahora.month}/{ahora.year}"
+                        obs_text = f"{fecha_obs}: {obs.strip().upper()}"
+                        
+                        # Leer valor actual y agregar
+                        current_val = ws_clientes.cell(cliente_fila, 9).value or ""
+                        if current_val and current_val.strip():
+                            new_val = current_val.strip() + "\n" + obs_text
+                        else:
+                            new_val = obs_text
+                        
+                        ws_clientes.update_cell(cliente_fila, 9, new_val)
+                    
+                    st.cache_data.clear()
+                    st.success("¡Reclamo verificado!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al actualizar: {e}")
 
 # =========================================================
 # GENERADOR DE PDF
@@ -337,7 +388,13 @@ def login_screen():
 
         if submit:
             try:
-                _, df_usuarios, _ = cargar_datos()
+                _, _, _, df_novedades = cargar_datos()
+                _, df_usuarios, _, _ = cargar_datos()
+                
+                # Cargar usuarios por separado para no recargar todo
+                ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
+                df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+                
                 user_row = df_usuarios[(df_usuarios['username'] == username) & (df_usuarios['password'] == password)]
                 
                 if not user_row.empty:
@@ -382,16 +439,47 @@ def main_app():
     st.divider()
 
     # Datos
-    df_reclamos, _, df_clientes_raw = cargar_datos()
-    ws_reclamos, ws_clientes, _ = init_google_sheets()
+    df_reclamos, _, df_clientes_raw, df_novedades = cargar_datos()
+    ws_reclamos, ws_clientes, _, ws_novedades = init_google_sheets()
 
     mask_tecnico_asignado = df_reclamos['Tecnico_Limpio'].notna()
+
+    # =====================================================
+    # NOVEDADES - Visible para TODOS
+    # =====================================================
+    if not df_novedades.empty:
+        ultima = df_novedades.iloc[-1]
+        fecha_nov = str(ultima.get('Fecha', ''))
+        mensaje_nov = str(ultima.get('Mensaje', ''))
+        if mensaje_nov and mensaje_nov != 'nan':
+            st.info(f"📢 **Novedad ({fecha_nov}):** {mensaje_nov}")
 
     # =====================================================
     # VISTA ADMIN
     # =====================================================
     if es_admin:
         st.markdown("### 👑 Panel de Administración")
+        
+        # --- RESUMEN DEL DÍA ---
+        mask_en_curso = df_reclamos['Estado_Limpio'] == "En curso"
+        mask_verificados = df_reclamos['Estado_Limpio'] == "Verificado"
+        mask_pendientes = df_reclamos['Estado_Limpio'] == "Pendiente"
+        mask_criticos = (df_reclamos['Horas_Transcurridas'] >= 48) & (df_reclamos['Estado_Limpio'].isin(["En curso", "Pendiente"]))
+        
+        count_curso = int(mask_en_curso.sum())
+        count_verif = int(mask_verificados.sum())
+        count_pend = int(mask_pendientes.sum())
+        count_crit = int(mask_criticos.sum())
+        
+        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+        with col_s1:
+            st.metric("🟢 En Curso", count_curso)
+        with col_s2:
+            st.metric("✅ Verificados", count_verif)
+        with col_s3:
+            st.metric("⏸️ Pendientes", count_pend)
+        with col_s4:
+            st.metric("🔴 +48 hs", count_crit)
         
         # --- HERRAMIENTAS ADMIN ---
         with st.container(border=True):
@@ -422,9 +510,7 @@ def main_app():
                 confirmar_cierre = st.checkbox("Confirmar cierre", key="chk_cierre")
                 if st.button("🔒 Cierre Masivo", disabled=not confirmar_cierre, use_container_width=True):
                     try:
-                        mask_verificados = df_reclamos['Estado_Limpio'] == "Verificado"
                         idxs = df_reclamos[mask_verificados].index.tolist()
-                        
                         if not idxs:
                             st.warning("No hay reclamos 'Verificado' para cerrar.")
                         else:
@@ -434,7 +520,6 @@ def main_app():
                                 sheet_row_num = i + 2
                                 cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
                                 updates.append({"range": cell_range, "values": [["Resuelto"]]})
-                            
                             ws_reclamos.batch_update(updates)
                             st.cache_data.clear()
                             st.success(f"¡{len(updates)} reclamos cerrados como Resuelto!")
@@ -448,9 +533,7 @@ def main_app():
                 confirmar_pendiente = st.checkbox("Confirmar pase", key="chk_pendiente")
                 if st.button("⏸️ Pasar a Pendiente", disabled=not confirmar_pendiente, use_container_width=True):
                     try:
-                        mask_en_curso = df_reclamos['Estado_Limpio'] == "En curso"
                         idxs = df_reclamos[mask_en_curso].index.tolist()
-                        
                         if not idxs:
                             st.warning("No hay reclamos 'En curso' para pasar.")
                         else:
@@ -460,7 +543,6 @@ def main_app():
                                 sheet_row_num = i + 2
                                 cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
                                 updates.append({"range": cell_range, "values": [["Pendiente"]]})
-                            
                             ws_reclamos.batch_update(updates)
                             st.cache_data.clear()
                             st.success(f"¡{len(updates)} reclamos pasados a Pendiente!")
@@ -468,6 +550,43 @@ def main_app():
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error al pasar a Pendiente: {e}")
+        
+        # --- NOVEDADES ADMIN ---
+        with st.container(border=True):
+            st.markdown("**📢 Novedades del Día**")
+            
+            # Mostrar últimas 3 novedades
+            if not df_novedades.empty:
+                ultimas = df_novedades.tail(3).iloc[::-1]
+                for _, nrow in ultimas.iterrows():
+                    f_nov = str(nrow.get('Fecha', ''))
+                    m_nov = str(nrow.get('Mensaje', ''))
+                    if m_nov and m_nov != 'nan':
+                        st.markdown(f"📌 **{f_nov}:** {m_nov}")
+            
+            # Formulario para nueva novedad
+            with st.form("form_novedad"):
+                nueva_novedad = st.text_input(
+                    "Escribir nueva novedad", 
+                    placeholder="Ej: Hoy se trabaja hasta las 18",
+                    key="nueva_nov_input"
+                )
+                submit_nov = st.form_submit_button("📢 Publicar Novedad", use_container_width=True)
+                if submit_nov:
+                    if not nueva_novedad.strip():
+                        st.error("❌ Escribí un mensaje.")
+                    else:
+                        try:
+                            tz_arg = timezone(timedelta(hours=-3))
+                            ahora = datetime.now(tz_arg)
+                            fecha_str = f"{ahora.day}/{ahora.month}/{ahora.year}"
+                            ws_novedades.append_row([fecha_str, nueva_novedad.strip()])
+                            st.cache_data.clear()
+                            st.success("✅ Novedad publicada.")
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
         
         st.divider()
 
@@ -522,10 +641,10 @@ def main_app():
             st.info("ℹ️ No hay reclamos En curso con técnico asignado.")
 
         # =================================================
-        # SECCIÓN PENDIENTES - Asignar técnicos
+        # SECCIÓN PENDIENTES
         # =================================================
-        mask_pendientes = df_reclamos['Estado_Limpio'] == "Pendiente"
-        df_pendientes = df_reclamos[mask_pendientes].copy()
+        mask_pend = df_reclamos['Estado_Limpio'] == "Pendiente"
+        df_pendientes = df_reclamos[mask_pend].copy()
 
         st.divider()
 
@@ -544,21 +663,18 @@ def main_app():
                     detalles_pen = str(row.get('Detalles', '')) if pd.notna(row.get('Detalles')) and str(row.get('Detalles')) != '*' else ''
                     horas_pen = row['Horas_Transcurridas']
 
-                    # Badge de tiempo
                     badge_pen = ""
                     if pd.notna(horas_pen):
                         if horas_pen >= 48: badge_pen = "🔴 +48 hs"
                         elif horas_pen >= 24: badge_pen = "🟡 +24 hs"
                         else: badge_pen = "🟢 Normal"
                     
-                    # Tiempo transcurrido
                     if pd.notna(horas_pen):
                         if horas_pen < 1: tiempo_pen = f"hace {int(horas_pen * 60)} min"
                         elif horas_pen < 24: tiempo_pen = f"hace {int(horas_pen)} hs"
                         else: tiempo_pen = f"hace {int(horas_pen / 24)} días"
                     else: tiempo_pen = "Fecha inválida"
 
-                    # Ubicación
                     tiene_ubicacion_pen = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
 
                     with st.container(border=True):
@@ -566,8 +682,7 @@ def main_app():
                         with col_h1:
                             st.markdown(f"**🎫 Nº {nro_cliente} - {nombre_cliente}**")
                         with col_h2:
-                            if badge_pen:
-                                st.markdown(f"**{badge_pen}**")
+                            if badge_pen: st.markdown(f"**{badge_pen}**")
                         
                         st.caption(f"⏸️ Pendiente · {tiempo_pen}")
                         st.markdown(f"📍 **Sector:** {sector}")
@@ -575,14 +690,12 @@ def main_app():
                         st.markdown(f"📞 **Teléfono:** {telefono}")
                         st.markdown(f"⚙️ **Reclamo:** {tipo_reclamo}")
                         
-                        if detalles_pen:
-                            st.info(f"📝 Detalles: {detalles_pen}")
+                        if detalles_pen: st.info(f"📝 Detalles: {detalles_pen}")
                         
                         if tiene_ubicacion_pen:
                             maps_url_pen = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
                             st.link_button("📍 Abrir ubicación en Google Maps", maps_url_pen, use_container_width=True)
 
-                        # --- FORMULARIO ASIGNAR TÉCNICOS ---
                         with st.form(f"form_asignar_{nro_cliente}_{sheet_row_num}"):
                             tecnicos_sel = st.multiselect(
                                 "👷 Asignar técnico(s)",
@@ -598,17 +711,14 @@ def main_app():
                                     try:
                                         col_estado = df_reclamos.columns.get_loc('Estado') + 1
                                         col_tecnico = df_reclamos.columns.get_loc('Técnico') + 1
-                                        
                                         tecnicos_str = ", ".join(tecnicos_sel)
-                                        
                                         updates = [
                                             {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_estado), "values": [["En curso"]]},
                                             {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_tecnico), "values": [[tecnicos_str]]}
                                         ]
-                                        
                                         ws_reclamos.batch_update(updates)
                                         st.cache_data.clear()
-                                        st.success(f"✅ Reclamo asignado a **{tecnicos_str}** y puesto En Curso.")
+                                        st.success(f"✅ Asignado a **{tecnicos_str}** y puesto En Curso.")
                                         time.sleep(1.5)
                                         st.rerun()
                                     except Exception as e:
@@ -633,7 +743,10 @@ def main_app():
             return
 
         for idx, row in mis_reclamos.iterrows():
-            renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False)
+            renderizar_tarjeta(
+                row, df_reclamos, ws_reclamos, 
+                es_admin=False, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
+            )
 
 # =========================================================
 # FLUJO PRINCIPAL
