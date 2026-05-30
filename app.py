@@ -7,6 +7,7 @@ import time
 from fpdf import FPDF
 import io
 import numpy as np
+import extra_streamlit_components as stx
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -17,6 +18,27 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="collapsed"
 )
+
+# =========================================================
+# INYECCIÓN PWA (manifest + meta tags)
+# =========================================================
+st.markdown("""
+<link rel="manifest" href="static/manifest.json">
+<meta name="theme-color" content="#0e1117">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fusion">
+""", unsafe_allow_html=True)
+
+# =========================================================
+# COOKIE MANAGER
+# =========================================================
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_cookie_manager()
 
 # =========================================================
 # CONFIGURACIÓN GOOGLE SHEETS
@@ -57,7 +79,6 @@ def init_google_sheets():
         ws_clientes = spreadsheet.worksheet(WORKSHEET_CLIENTES)
         ws_usuarios = spreadsheet.worksheet(WORKSHEET_USUARIOS)
         
-        # Crear hoja Novedades si no existe
         try:
             ws_novedades = spreadsheet.worksheet(WORKSHEET_NOVEDADES)
         except gspread.exceptions.WorksheetNotFound:
@@ -79,7 +100,6 @@ def cargar_datos():
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
     
-    # Novedades
     try:
         df_novedades = pd.DataFrame(ws_novedades.get_all_records())
     except:
@@ -87,7 +107,6 @@ def cargar_datos():
 
     df_clientes_raw = df_clientes.copy()
 
-    # Clientes - Extraer Coordenadas y Precinto
     df_c = df_clientes.rename(columns={
         'Nº Cliente': 'nro_cliente_cli', 
         'Latitud': 'lat', 
@@ -102,20 +121,17 @@ def cargar_datos():
 
     datos_cliente = df_c[['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente']].drop_duplicates(subset=['nro_cliente_cli'])
 
-    # Reclamos
     df_r = df_reclamos.copy()
     df_r['Nº Cliente'] = df_r['Nº Cliente'].astype(str)
     
     df_r = df_r.merge(datos_cliente, left_on='Nº Cliente', right_on='nro_cliente_cli', how='left')
 
-    # Fechas
     tz_argentina = timezone(timedelta(hours=-3))
     ahora = datetime.now(tz_argentina)
     df_r['Fecha_Parseada'] = pd.to_datetime(df_r['Fecha y hora'], format='%d/%m/%Y %H:%M', errors='coerce')
     df_r['Fecha_Parseada'] = df_r['Fecha_Parseada'].dt.tz_localize(tz_argentina)
     df_r['Horas_Transcurridas'] = (ahora - df_r['Fecha_Parseada']).dt.total_seconds() / 3600
 
-    # Limpieza
     df_r['Estado_Limpio'] = df_r['Estado'].astype(str).str.strip()
     df_r['Tecnico_Limpio'] = df_r['Técnico'].astype(str).str.strip()
     df_r['Tecnico_Limpio'] = df_r['Tecnico_Limpio'].replace('', np.nan)
@@ -152,7 +168,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
         else: texto_tiempo = f"hace {int(horas / 24)} días"
     else: texto_tiempo = "Fecha inválida"
 
-    # Buscar fila del cliente (para admin y observaciones)
     cliente_fila = None
     if ws_clientes is not None and df_clientes_raw is not None:
         df_cl = df_clientes_raw.copy()
@@ -186,9 +201,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
         else:
             st.caption("📍 Sin ubicación registrada")
 
-        # =============================================
-        # ADMIN: EDITAR PRECINTO Y UBICACIÓN
-        # =============================================
         if es_admin and cliente_fila is not None:
             if not precinto or not tiene_ubicacion:
                 st.markdown("---")
@@ -243,9 +255,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                 except Exception as e:
                                     st.error(f"❌ Error: {e}")
 
-        # =============================================
-        # OBSERVACIÓN + VERIFICAR (para todos)
-        # =============================================
+        # OBSERVACIÓN + VERIFICAR
         st.markdown("---")
         with st.form(f"form_verify_{sheet_row_num}"):
             obs = st.text_input(
@@ -257,18 +267,15 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
             
             if submit_verify:
                 try:
-                    # 1. Cambiar estado a Verificado
                     col_idx = df_reclamos.columns.get_loc('Estado') + 1
                     ws_reclamos.update_cell(sheet_row_num, col_idx, "Verificado")
                     
-                    # 2. Guardar observación en columna I del Cliente
                     if obs.strip() and cliente_fila is not None:
                         tz_arg = timezone(timedelta(hours=-3))
                         ahora = datetime.now(tz_arg)
                         fecha_obs = f"{ahora.day}/{ahora.month}/{ahora.year}"
                         obs_text = f"{fecha_obs}: {obs.strip().upper()}"
                         
-                        # Leer valor actual y agregar
                         current_val = ws_clientes.cell(cliente_fila, 9).value or ""
                         if current_val and current_val.strip():
                             new_val = current_val.strip() + "\n" + obs_text
@@ -388,10 +395,6 @@ def login_screen():
 
         if submit:
             try:
-                _, _, _, df_novedades = cargar_datos()
-                _, df_usuarios, _, _ = cargar_datos()
-                
-                # Cargar usuarios por separado para no recargar todo
                 ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
                 df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
                 
@@ -401,15 +404,20 @@ def login_screen():
                     rol = str(user_row.iloc[0]['rol']).strip()
                     rol_lower = rol.lower()
                     
-                    if rol_lower in ['admin', 'oficina', 'supervisor']:
-                        es_admin = True
-                    else:
-                        es_admin = False
+                    es_admin = rol_lower in ['admin', 'oficina', 'supervisor']
 
                     st.session_state["authenticated"] = True
                     st.session_state["user_name"] = user_row.iloc[0]['nombre']
                     st.session_state["rol"] = rol
                     st.session_state["es_admin"] = es_admin
+                    
+                    # GUARDAR COOKIE (30 días)
+                    cookie_manager.set(
+                        "fusion_user", 
+                        username, 
+                        expires_at=datetime.now() + timedelta(days=30)
+                    )
+                    
                     st.rerun()
                 else:
                     st.error("Usuario o contraseña incorrectos.")
@@ -433,6 +441,8 @@ def main_app():
             st.rerun()
     with col3:
         if st.button("🚪 Salir"):
+            # BORRAR COOKIE al salir
+            cookie_manager.delete("fusion_user")
             st.session_state.authenticated = False
             st.rerun()
 
@@ -555,7 +565,6 @@ def main_app():
         with st.container(border=True):
             st.markdown("**📢 Novedades del Día**")
             
-            # Mostrar últimas 3 novedades
             if not df_novedades.empty:
                 ultimas = df_novedades.tail(3).iloc[::-1]
                 for _, nrow in ultimas.iterrows():
@@ -564,7 +573,6 @@ def main_app():
                     if m_nov and m_nov != 'nan':
                         st.markdown(f"📌 **{f_nov}:** {m_nov}")
             
-            # Formulario para nueva novedad
             with st.form("form_novedad"):
                 nueva_novedad = st.text_input(
                     "Escribir nueva novedad", 
@@ -640,9 +648,7 @@ def main_app():
         else:
             st.info("ℹ️ No hay reclamos En curso con técnico asignado.")
 
-        # =================================================
         # SECCIÓN PENDIENTES
-        # =================================================
         mask_pend = df_reclamos['Estado_Limpio'] == "Pendiente"
         df_pendientes = df_reclamos[mask_pend].copy()
 
@@ -749,10 +755,33 @@ def main_app():
             )
 
 # =========================================================
-# FLUJO PRINCIPAL
+# FLUJO PRINCIPAL (con auto-login por cookie)
 # =========================================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+
+# Intentar auto-login con cookie
+if not st.session_state.authenticated:
+    saved_user = cookie_manager.get("fusion_user")
+    if saved_user:
+        try:
+            ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
+            df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+            user_row = df_usuarios[(df_usuarios['username'] == saved_user)]
+            
+            if not user_row.empty:
+                rol = str(user_row.iloc[0]['rol']).strip()
+                rol_lower = rol.lower()
+                es_admin = rol_lower in ['admin', 'oficina', 'supervisor']
+                
+                st.session_state["authenticated"] = True
+                st.session_state["user_name"] = user_row.iloc[0]['nombre']
+                st.session_state["rol"] = rol
+                st.session_state["es_admin"] = es_admin
+            else:
+                cookie_manager.delete("fusion_user")
+        except:
+            pass
 
 if st.session_state.authenticated:
     main_app()
