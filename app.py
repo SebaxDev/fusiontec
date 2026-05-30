@@ -26,7 +26,6 @@ def get_cookie_manager():
 cookie_manager = get_cookie_manager()
 
 def save_cookie(key, value, days=30):
-    """Guardar cookie si está disponible"""
     if COOKIE_AVAILABLE and cookie_manager:
         try:
             cookie_manager.set(key, value, expires_at=datetime.now() + timedelta(days=days))
@@ -34,7 +33,6 @@ def save_cookie(key, value, days=30):
             pass
 
 def load_cookie(key):
-    """Leer cookie si está disponible"""
     if COOKIE_AVAILABLE and cookie_manager:
         try:
             return cookie_manager.get(key)
@@ -43,7 +41,6 @@ def load_cookie(key):
     return None
 
 def delete_cookie(key):
-    """Borrar cookie si está disponible"""
     if COOKIE_AVAILABLE and cookie_manager:
         try:
             cookie_manager.delete(key)
@@ -442,7 +439,6 @@ def login_screen():
                     st.session_state["rol"] = rol
                     st.session_state["es_admin"] = es_admin
                     
-                    # Guardar cookie
                     save_cookie("fusion_user", username, days=30)
                     
                     st.rerun()
@@ -597,7 +593,7 @@ def main_app():
                     f_nov = str(nrow.get('Fecha', ''))
                     m_nov = str(nrow.get('Mensaje', ''))
                     if m_nov and m_nov != 'nan':
-                        st.markdown(f"📌 **{f_nov}:** {m_nov")
+                        st.markdown(f"📌 **{f_nov}:** {m_nov}")
             
             with st.form("form_novedad"):
                 nueva_novedad = st.text_input(
