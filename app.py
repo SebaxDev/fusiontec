@@ -33,6 +33,14 @@ SCOPES = [
 ]
 
 # =========================================================
+# LISTA DE TÉCNICOS
+# =========================================================
+TECNICOS_DISPONIBLES = [
+    "CONEJO", "JUAN", "JUNIOR", "MAXI", "MARKI",
+    "RAMON", "RENE", "ROQUE", "VIKI", "OFICINA", "BASE"
+]
+
+# =========================================================
 # CONEXIÓN GOOGLE SHEETS
 # =========================================================
 @st.cache_resource(show_spinner="Conectando...")
@@ -467,52 +475,146 @@ def main_app():
         mask_verificados_tec = (df_reclamos['Estado_Limpio'] == "Verificado") & mask_tecnico_asignado
         verificados_por_tecnico = df_reclamos[mask_verificados_tec].groupby('Tecnico_Limpio').size().to_dict()
 
-        # --- LISTADO ADMIN (Solo "En curso") ---
+        # --- LISTADO EN CURSO ---
         estados_display = ["En curso"]
         mask_estado_display = df_reclamos['Estado_Limpio'].isin(estados_display)
         df_activos_display = df_reclamos[mask_estado_display & mask_tecnico_asignado].copy()
 
-        if df_activos_display.empty:
-            st.success("🎉 No hay reclamos En curso con técnico asignado.")
-            return
-
-        tecnicos_unicos = sorted(df_activos_display['Tecnico_Limpio'].unique())
-        tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
-        
-        if tecnico_seleccionado == "Todos":
-            df_filtrado = df_activos_display.copy()
-        else:
-            df_filtrado = df_activos_display[df_activos_display['Tecnico_Limpio'] == tecnico_seleccionado].copy()
-
-        df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
-
-        if tecnico_seleccionado == "Todos":
-            total_en_curso = len(df_filtrado)
-            total_verificados = sum(verificados_por_tecnico.get(t, 0) for t in tecnicos_unicos)
-            total_general = total_en_curso + total_verificados
-            st.markdown(f"**Total: {total_general} (En Curso {total_en_curso} + Verificados {total_verificados})**")
+        if not df_activos_display.empty:
+            tecnicos_unicos = sorted(df_activos_display['Tecnico_Limpio'].unique())
+            tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
             
-            for tecnico, grupo in df_filtrado.groupby('Tecnico_Limpio'):
-                en_curso = len(grupo)
-                verificados = verificados_por_tecnico.get(tecnico, 0)
+            if tecnico_seleccionado == "Todos":
+                df_filtrado = df_activos_display.copy()
+            else:
+                df_filtrado = df_activos_display[df_activos_display['Tecnico_Limpio'] == tecnico_seleccionado].copy()
+
+            df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
+
+            if tecnico_seleccionado == "Todos":
+                total_en_curso = len(df_filtrado)
+                total_verificados = sum(verificados_por_tecnico.get(t, 0) for t in tecnicos_unicos)
+                total_general = total_en_curso + total_verificados
+                st.markdown(f"**Total: {total_general} (En Curso {total_en_curso} + Verificados {total_verificados})**")
+                
+                for tecnico, grupo in df_filtrado.groupby('Tecnico_Limpio'):
+                    en_curso = len(grupo)
+                    verificados = verificados_por_tecnico.get(tecnico, 0)
+                    total = en_curso + verificados
+                    with st.expander(f"👷 {tecnico} {total} (En Curso {en_curso} + Verificados {verificados})"):
+                        for idx, row in grupo.iterrows():
+                            renderizar_tarjeta(
+                                row, df_reclamos, ws_reclamos, 
+                                es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
+                            )
+            else:
+                en_curso = len(df_filtrado)
+                verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
                 total = en_curso + verificados
-                with st.expander(f"👷 {tecnico} {total} (En Curso {en_curso} + Verificados {verificados})"):
-                    for idx, row in grupo.iterrows():
-                        renderizar_tarjeta(
-                            row, df_reclamos, ws_reclamos, 
-                            es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
-                        )
+                st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {verificados})**")
+                
+                for idx, row in df_filtrado.iterrows():
+                    renderizar_tarjeta(
+                        row, df_reclamos, ws_reclamos, 
+                        es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
+                    )
         else:
-            en_curso = len(df_filtrado)
-            verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
-            total = en_curso + verificados
-            st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {verificados})**")
+            st.info("ℹ️ No hay reclamos En curso con técnico asignado.")
+
+        # =================================================
+        # SECCIÓN PENDIENTES - Asignar técnicos
+        # =================================================
+        mask_pendientes = df_reclamos['Estado_Limpio'] == "Pendiente"
+        df_pendientes = df_reclamos[mask_pendientes].copy()
+
+        st.divider()
+
+        if not df_pendientes.empty:
+            df_pendientes = df_pendientes.sort_values(by='Horas_Transcurridas', ascending=False)
             
-            for idx, row in df_filtrado.iterrows():
-                renderizar_tarjeta(
-                    row, df_reclamos, ws_reclamos, 
-                    es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
-                )
+            with st.expander(f"📋 Reclamos Pendientes ({len(df_pendientes)})"):
+                for idx, row in df_pendientes.iterrows():
+                    sheet_row_num = row.name + 2
+                    nro_cliente = str(row.get('Nº Cliente', ''))
+                    nombre_cliente = str(row.get('Nombre', ''))
+                    tipo_reclamo = str(row.get('Tipo de reclamo', ''))
+                    sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
+                    direccion = str(row.get('Dirección', 'Sin dirección')) if pd.notna(row.get('Dirección')) else 'Sin dirección'
+                    telefono = str(row.get('Teléfono', 'Sin teléfono')) if pd.notna(row.get('Teléfono')) else 'Sin teléfono'
+                    detalles_pen = str(row.get('Detalles', '')) if pd.notna(row.get('Detalles')) and str(row.get('Detalles')) != '*' else ''
+                    horas_pen = row['Horas_Transcurridas']
+
+                    # Badge de tiempo
+                    badge_pen = ""
+                    if pd.notna(horas_pen):
+                        if horas_pen >= 48: badge_pen = "🔴 +48 hs"
+                        elif horas_pen >= 24: badge_pen = "🟡 +24 hs"
+                        else: badge_pen = "🟢 Normal"
+                    
+                    # Tiempo transcurrido
+                    if pd.notna(horas_pen):
+                        if horas_pen < 1: tiempo_pen = f"hace {int(horas_pen * 60)} min"
+                        elif horas_pen < 24: tiempo_pen = f"hace {int(horas_pen)} hs"
+                        else: tiempo_pen = f"hace {int(horas_pen / 24)} días"
+                    else: tiempo_pen = "Fecha inválida"
+
+                    # Ubicación
+                    tiene_ubicacion_pen = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
+
+                    with st.container(border=True):
+                        col_h1, col_h2 = st.columns([4, 1])
+                        with col_h1:
+                            st.markdown(f"**🎫 Nº {nro_cliente} - {nombre_cliente}**")
+                        with col_h2:
+                            if badge_pen:
+                                st.markdown(f"**{badge_pen}**")
+                        
+                        st.caption(f"⏸️ Pendiente · {tiempo_pen}")
+                        st.markdown(f"📍 **Sector:** {sector}")
+                        st.markdown(f"**Dirección:** {direccion}")
+                        st.markdown(f"📞 **Teléfono:** {telefono}")
+                        st.markdown(f"⚙️ **Reclamo:** {tipo_reclamo}")
+                        
+                        if detalles_pen:
+                            st.info(f"📝 Detalles: {detalles_pen}")
+                        
+                        if tiene_ubicacion_pen:
+                            maps_url_pen = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
+                            st.link_button("📍 Abrir ubicación en Google Maps", maps_url_pen, use_container_width=True)
+
+                        # --- FORMULARIO ASIGNAR TÉCNICOS ---
+                        with st.form(f"form_asignar_{nro_cliente}_{sheet_row_num}"):
+                            tecnicos_sel = st.multiselect(
+                                "👷 Asignar técnico(s)",
+                                TECNICOS_DISPONIBLES,
+                                key=f"ms_tec_{nro_cliente}_{sheet_row_num}"
+                            )
+                            submit_asignar = st.form_submit_button("🚀 Asignar y poner En Curso", use_container_width=True)
+                            
+                            if submit_asignar:
+                                if not tecnicos_sel:
+                                    st.error("❌ Seleccioná al menos un técnico.")
+                                else:
+                                    try:
+                                        col_estado = df_reclamos.columns.get_loc('Estado') + 1
+                                        col_tecnico = df_reclamos.columns.get_loc('Técnico') + 1
+                                        
+                                        tecnicos_str = ", ".join(tecnicos_sel)
+                                        
+                                        updates = [
+                                            {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_estado), "values": [["En curso"]]},
+                                            {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_tecnico), "values": [[tecnicos_str]]}
+                                        ]
+                                        
+                                        ws_reclamos.batch_update(updates)
+                                        st.cache_data.clear()
+                                        st.success(f"✅ Reclamo asignado a **{tecnicos_str}** y puesto En Curso.")
+                                        time.sleep(1.5)
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Error al asignar: {e}")
+        else:
+            st.success("🎉 No hay reclamos Pendientes.")
 
     # =====================================================
     # VISTA TÉCNICO
