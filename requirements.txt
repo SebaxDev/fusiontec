@@ -6,3 +6,5 @@ folium
 streamlit-folium
 geopy
 fpdf2
+numpy
+extra-streamlit-components

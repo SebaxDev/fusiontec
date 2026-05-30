@@ -7,7 +7,48 @@ import time
 from fpdf import FPDF
 import io
 import numpy as np
-import extra_streamlit_components as stx
+
+# =========================================================
+# COOKIE MANAGER (con fallback seguro)
+# =========================================================
+try:
+    import extra_streamlit_components as stx
+    COOKIE_AVAILABLE = True
+except ImportError:
+    COOKIE_AVAILABLE = False
+
+@st.cache_resource
+def get_cookie_manager():
+    if COOKIE_AVAILABLE:
+        return stx.CookieManager()
+    return None
+
+cookie_manager = get_cookie_manager()
+
+def save_cookie(key, value, days=30):
+    """Guardar cookie si está disponible"""
+    if COOKIE_AVAILABLE and cookie_manager:
+        try:
+            cookie_manager.set(key, value, expires_at=datetime.now() + timedelta(days=days))
+        except:
+            pass
+
+def load_cookie(key):
+    """Leer cookie si está disponible"""
+    if COOKIE_AVAILABLE and cookie_manager:
+        try:
+            return cookie_manager.get(key)
+        except:
+            return None
+    return None
+
+def delete_cookie(key):
+    """Borrar cookie si está disponible"""
+    if COOKIE_AVAILABLE and cookie_manager:
+        try:
+            cookie_manager.delete(key)
+        except:
+            pass
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -30,15 +71,6 @@ st.markdown("""
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Fusion">
 """, unsafe_allow_html=True)
-
-# =========================================================
-# COOKIE MANAGER
-# =========================================================
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
 
 # =========================================================
 # CONFIGURACIÓN GOOGLE SHEETS
@@ -403,7 +435,6 @@ def login_screen():
                 if not user_row.empty:
                     rol = str(user_row.iloc[0]['rol']).strip()
                     rol_lower = rol.lower()
-                    
                     es_admin = rol_lower in ['admin', 'oficina', 'supervisor']
 
                     st.session_state["authenticated"] = True
@@ -411,12 +442,8 @@ def login_screen():
                     st.session_state["rol"] = rol
                     st.session_state["es_admin"] = es_admin
                     
-                    # GUARDAR COOKIE (30 días)
-                    cookie_manager.set(
-                        "fusion_user", 
-                        username, 
-                        expires_at=datetime.now() + timedelta(days=30)
-                    )
+                    # Guardar cookie
+                    save_cookie("fusion_user", username, days=30)
                     
                     st.rerun()
                 else:
@@ -441,8 +468,7 @@ def main_app():
             st.rerun()
     with col3:
         if st.button("🚪 Salir"):
-            # BORRAR COOKIE al salir
-            cookie_manager.delete("fusion_user")
+            delete_cookie("fusion_user")
             st.session_state.authenticated = False
             st.rerun()
 
@@ -571,7 +597,7 @@ def main_app():
                     f_nov = str(nrow.get('Fecha', ''))
                     m_nov = str(nrow.get('Mensaje', ''))
                     if m_nov and m_nov != 'nan':
-                        st.markdown(f"📌 **{f_nov}:** {m_nov}")
+                        st.markdown(f"📌 **{f_nov}:** {m_nov")
             
             with st.form("form_novedad"):
                 nueva_novedad = st.text_input(
@@ -762,7 +788,7 @@ if "authenticated" not in st.session_state:
 
 # Intentar auto-login con cookie
 if not st.session_state.authenticated:
-    saved_user = cookie_manager.get("fusion_user")
+    saved_user = load_cookie("fusion_user")
     if saved_user:
         try:
             ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
@@ -779,7 +805,7 @@ if not st.session_state.authenticated:
                 st.session_state["rol"] = rol
                 st.session_state["es_admin"] = es_admin
             else:
-                cookie_manager.delete("fusion_user")
+                delete_cookie("fusion_user")
         except:
             pass
 
