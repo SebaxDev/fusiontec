@@ -245,7 +245,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                     ws_clientes.batch_update([{"range": cell, "values": [[new_precinto.strip()]]}])
                                     st.cache_data.clear()
                                     st.success("✅ Precinto guardado.")
-                                    time.sleep(1)
+                                    time.sleep(1) # Reincorporado por seguridad API
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Error: {e}")
@@ -274,7 +274,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                     ws_clientes.batch_update(updates)
                                     st.cache_data.clear()
                                     st.success("✅ Coordenadas guardadas.")
-                                    time.sleep(1)
+                                    time.sleep(1) # Reincorporado por seguridad API
                                     st.rerun()
                                 except ValueError:
                                     st.error("❌ Las coordenadas deben ser numéricas (ej: -26.123456).")
@@ -312,7 +312,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                     
                     st.cache_data.clear()
                     st.success("¡Reclamo verificado!")
-                    time.sleep(1)
+                    time.sleep(1) # Reincorporado por seguridad API
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error al actualizar: {e}")
@@ -552,7 +552,7 @@ def main_app():
                             ws_reclamos.batch_update(updates)
                             st.cache_data.clear()
                             st.success(f"¡{len(updates)} reclamos cerrados como Resuelto!")
-                            time.sleep(2)
+                            time.sleep(2) # Reincorporado por seguridad API
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error en cierre masivo: {e}")
@@ -575,7 +575,7 @@ def main_app():
                             ws_reclamos.batch_update(updates)
                             st.cache_data.clear()
                             st.success(f"¡{len(updates)} reclamos pasados a Pendiente!")
-                            time.sleep(2)
+                            time.sleep(2) # Reincorporado por seguridad API
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error al pasar a Pendiente: {e}")
@@ -610,7 +610,7 @@ def main_app():
                             ws_novedades.append_row([fecha_str, nueva_novedad.strip()])
                             st.cache_data.clear()
                             st.success("✅ Novedad publicada.")
-                            time.sleep(1)
+                            time.sleep(1) # Reincorporado por seguridad API
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error: {e}")
@@ -744,12 +744,40 @@ def main_app():
                                         ws_reclamos.batch_update(updates)
                                         st.cache_data.clear()
                                         st.success(f"✅ Asignado a **{tecnicos_str}** y puesto En Curso.")
-                                        time.sleep(1.5)
+                                        time.sleep(1.5) # Reincorporado por seguridad API
                                         st.rerun()
                                     except Exception as e:
                                         st.error(f"❌ Error al asignar: {e}")
         else:
             st.success("🎉 No hay reclamos Pendientes.")
+
+        # =====================================================================
+        # SECCIÓN VERIFICADOS (LISTA COMPACTA EXCLUSIVA ADMIN)
+        # =====================================================================
+        st.divider()
+        df_verificados_lista = df_reclamos[df_reclamos['Estado_Limpio'] == "Verificado"].copy()
+
+        if not df_verificados_lista.empty:
+            with st.expander(f"✅ Reclamos Verificados - Control ({len(df_verificados_lista)})"):
+                # Crear un DataFrame compacto solo con los datos necesarios
+                df_verif_compact = df_verificados_lista[['Nº Cliente', 'Nombre', 'Técnico_Limpio']].copy()
+                df_verif_compact.rename(columns={'Técnico_Limpio': 'Técnico'}, inplace=True)
+                df_verif_compact = df_verif_compact.fillna('Sin asignar')
+                
+                # Usar st.dataframe para lista rápida y ágil visualmente
+                st.dataframe(
+                    df_verif_compact, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Nº Cliente": st.column_config.TextColumn("Nº Cliente", width="small"),
+                        "Nombre": st.column_config.TextColumn("Nombre", width="medium"),
+                        "Técnico": st.column_config.TextColumn("Técnico", width="small")
+                    }
+                )
+        else:
+            st.info("ℹ️ No hay reclamos verificados aún.")
+
 
     # =====================================================
     # VISTA TÉCNICO
