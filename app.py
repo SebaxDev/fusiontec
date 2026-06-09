@@ -126,8 +126,14 @@ def cargar_datos():
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
     
+    # LIMPIEZA DE NOMBRES DE COLUMNAS: Evita errores por espacios accidentales en Google Sheets
+    df_reclamos.columns = df_reclamos.columns.str.strip()
+    df_clientes.columns = df_clientes.columns.str.strip()
+    df_usuarios.columns = df_usuarios.columns.str.strip()
+
     try:
         df_novedades = pd.DataFrame(ws_novedades.get_all_records())
+        df_novedades.columns = df_novedades.columns.str.strip()
     except:
         df_novedades = pd.DataFrame(columns=['Fecha', 'Mensaje'])
 
@@ -245,7 +251,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                     ws_clientes.batch_update([{"range": cell, "values": [[new_precinto.strip()]]}])
                                     st.cache_data.clear()
                                     st.success("✅ Precinto guardado.")
-                                    time.sleep(1) # Reincorporado por seguridad API
+                                    time.sleep(1)
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Error: {e}")
@@ -274,7 +280,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                     ws_clientes.batch_update(updates)
                                     st.cache_data.clear()
                                     st.success("✅ Coordenadas guardadas.")
-                                    time.sleep(1) # Reincorporado por seguridad API
+                                    time.sleep(1)
                                     st.rerun()
                                 except ValueError:
                                     st.error("❌ Las coordenadas deben ser numéricas (ej: -26.123456).")
@@ -312,7 +318,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                     
                     st.cache_data.clear()
                     st.success("¡Reclamo verificado!")
-                    time.sleep(1) # Reincorporado por seguridad API
+                    time.sleep(1)
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error al actualizar: {e}")
@@ -552,7 +558,7 @@ def main_app():
                             ws_reclamos.batch_update(updates)
                             st.cache_data.clear()
                             st.success(f"¡{len(updates)} reclamos cerrados como Resuelto!")
-                            time.sleep(2) # Reincorporado por seguridad API
+                            time.sleep(2)
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error en cierre masivo: {e}")
@@ -575,7 +581,7 @@ def main_app():
                             ws_reclamos.batch_update(updates)
                             st.cache_data.clear()
                             st.success(f"¡{len(updates)} reclamos pasados a Pendiente!")
-                            time.sleep(2) # Reincorporado por seguridad API
+                            time.sleep(2)
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error al pasar a Pendiente: {e}")
@@ -610,7 +616,7 @@ def main_app():
                             ws_novedades.append_row([fecha_str, nueva_novedad.strip()])
                             st.cache_data.clear()
                             st.success("✅ Novedad publicada.")
-                            time.sleep(1) # Reincorporado por seguridad API
+                            time.sleep(1)
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error: {e}")
@@ -744,7 +750,7 @@ def main_app():
                                         ws_reclamos.batch_update(updates)
                                         st.cache_data.clear()
                                         st.success(f"✅ Asignado a **{tecnicos_str}** y puesto En Curso.")
-                                        time.sleep(1.5) # Reincorporado por seguridad API
+                                        time.sleep(1.5)
                                         st.rerun()
                                     except Exception as e:
                                         st.error(f"❌ Error al asignar: {e}")
@@ -752,28 +758,29 @@ def main_app():
             st.success("🎉 No hay reclamos Pendientes.")
 
         # =====================================================================
-        # SECCIÓN VERIFICADOS (LISTA COMPACTA EXCLUSIVA ADMIN)
+        # SECCIÓN VERIFICADOS (LISTA COMPACTA EXCLUSIVA ADMIN - CORREGIDA)
         # =====================================================================
         st.divider()
         df_verificados_lista = df_reclamos[df_reclamos['Estado_Limpio'] == "Verificado"].copy()
 
         if not df_verificados_lista.empty:
             with st.expander(f"✅ Reclamos Verificados - Control ({len(df_verificados_lista)})"):
-                # Crear un DataFrame compacto solo con los datos necesarios
-                df_verif_compact = df_verificados_lista[['Nº Cliente', 'Nombre', 'Técnico_Limpio']].copy()
-                df_verif_compact.rename(columns={'Técnico_Limpio': 'Técnico'}, inplace=True)
+                # Seleccionar solo las columnas deseadas si existen en la hoja
+                cols_disponibles = []
+                if 'Nº Cliente' in df_verificados_lista.columns:
+                    cols_disponibles.append('Nº Cliente')
+                if 'Nombre' in df_verificados_lista.columns:
+                    cols_disponibles.append('Nombre')
+                cols_disponibles.append('Tecnico_Limpio') # Esta siempre existe porque la creamos
+                
+                df_verif_compact = df_verificados_lista[cols_disponibles].copy()
+                df_verif_compact.rename(columns={'Tecnico_Limpio': 'Técnico'}, inplace=True)
                 df_verif_compact = df_verif_compact.fillna('Sin asignar')
                 
-                # Usar st.dataframe para lista rápida y ágil visualmente
                 st.dataframe(
                     df_verif_compact, 
                     use_container_width=True, 
-                    hide_index=True,
-                    column_config={
-                        "Nº Cliente": st.column_config.TextColumn("Nº Cliente", width="small"),
-                        "Nombre": st.column_config.TextColumn("Nombre", width="medium"),
-                        "Técnico": st.column_config.TextColumn("Técnico", width="small")
-                    }
+                    hide_index=True
                 )
         else:
             st.info("ℹ️ No hay reclamos verificados aún.")
@@ -814,6 +821,7 @@ if not st.session_state.authenticated:
         try:
             ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
             df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+            df_usuarios.columns = df_usuarios.columns.str.strip() # Aplicar limpieza aquí también
             user_row = df_usuarios[(df_usuarios['username'] == saved_user)]
             
             if not user_row.empty:
