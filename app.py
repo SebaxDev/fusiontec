@@ -1,13 +1,3 @@
-¡Perfecto! Entiendo perfectamente los dos puntos. 
-
-Para lograr lo que pides, hice las siguientes modificaciones en tu código:
-
-1. **El título principal:** Cambié el texto en el método `header()` de la clase `PDFReporte` por `"Resumen de los Trabajos del Día"`.
-2. **El encabezado de técnico:** Dentro de la función `generar_pdf`, agregué la lógica para contar cuántos reclamos tiene el técnico en estado "Verificado" (OK) y cuántos en otro estado (Pendientes). Además, agregué `.title()` al nombre del técnico para que pase de "CONEJO" a "Conejo", tal como lo mostraste en tu ejemplo.
-
-Aquí tienes el código completo listo para que lo copies y reemplaces en tu archivo `app.py`:
-
-```python
 import streamlit as st
 import pandas as pd
 import gspread
