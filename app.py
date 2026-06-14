@@ -1,3 +1,13 @@
+¡Perfecto! Entiendo perfectamente los dos puntos. 
+
+Para lograr lo que pides, hice las siguientes modificaciones en tu código:
+
+1. **El título principal:** Cambié el texto en el método `header()` de la clase `PDFReporte` por `"Resumen de los Trabajos del Día"`.
+2. **El encabezado de técnico:** Dentro de la función `generar_pdf`, agregué la lógica para contar cuántos reclamos tiene el técnico en estado "Verificado" (OK) y cuántos en otro estado (Pendientes). Además, agregué `.title()` al nombre del técnico para que pase de "CONEJO" a "Conejo", tal como lo mostraste en tu ejemplo.
+
+Aquí tienes el código completo listo para que lo copies y reemplaces en tu archivo `app.py`:
+
+```python
 import streamlit as st
 import pandas as pd
 import gspread
@@ -329,7 +339,8 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
 class PDFReporte(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 12)
-        self.cell(0, 10, f'Reclamos en Curso/Verificados - {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
+        # TÍTULO ACTUALIZADO
+        self.cell(0, 10, f'Resumen de los Trabajos del Día - {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
         self.ln(5)
 
     def footer(self):
@@ -359,6 +370,11 @@ def generar_pdf(df, fecha_str):
     for tecnico in tecnicos:
         df_tec = df[df['Tecnico_Grupo'] == tecnico]
         count_tec = len(df_tec)
+        
+        # CÁLCULO DE OK Y PENDIENTES PARA EL ENCABEZADO
+        count_ok = len(df_tec[df_tec['Estado_Limpio'] == 'Verificado'])
+        count_pendientes = count_tec - count_ok
+        
         block_height = 7 + (count_tec * 5)
 
         if current_y + block_height > bottom_limit:
@@ -370,9 +386,13 @@ def generar_pdf(df, fecha_str):
             current_y = margin_y
 
         tecnico_safe = tecnico.encode('latin-1', 'replace').decode('latin-1')
+        # .title() PASA EL NOMBRE DE MAYÚSCULAS A MAYÚSCULA INICIAL (Ej: CONEJO -> Conejo)
+        tecnico_display = tecnico_safe.title()
+        
         pdf.set_xy(current_x, current_y)
         pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(col_width, 5, f"Técnico: {tecnico_safe} ({count_tec})", 0, 1)
+        # ENCABEZADO ACTUALIZADO CON DETALLE DE OK Y PENDIENTES
+        pdf.cell(col_width, 5, f"Técnico: {tecnico_display} ({count_tec}) ({count_ok} OK - {count_pendientes} Pendientes)", 0, 1)
         pdf.line(current_x, current_y + 5, current_x + col_width, current_y + 5)
         current_y += 7
 
@@ -842,3 +862,4 @@ if st.session_state.authenticated:
     main_app()
 else:
     login_screen()
+```
