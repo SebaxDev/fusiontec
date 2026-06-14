@@ -852,4 +852,3 @@ if st.session_state.authenticated:
     main_app()
 else:
     login_screen()
-```
