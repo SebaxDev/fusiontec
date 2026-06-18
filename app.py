@@ -425,6 +425,57 @@ def generar_pdf(df, fecha_str):
     return bytes(pdf.output())
 
 # =========================================================
+# GENERADOR DE MENSAJE WHATSAPP (Copia y Pega)
+# =========================================================
+def generar_mensaje_asignacion(row, tecnicos_asignados):
+    """
+    Genera un texto formateado con los datos del reclamo para enviar por WhatsApp.
+    """
+    
+    # Datos básicos
+    cliente = str(row.get('Nombre', 'Sin Nombre'))
+    nro_cliente = str(row.get('Nº Cliente', ''))
+    direccion = str(row.get('Dirección', 'Sin dirección'))
+    telefono = str(row.get('Teléfono', 'Sin teléfono'))
+    tipo_reclamo = str(row.get('Tipo de reclamo', ''))
+    detalles = str(row.get('Detalles', ''))
+    sector = str(row.get('Sector', ''))
+    
+    # Verificar si hay detalles y limpiarlos
+    if detalles == '*' or detalles == 'nan': detalles = ""
+    
+    # Construcción del texto
+    linea_separadora = "------------------------------------------------"
+    
+    msg = f"🔧 *NUEVA ASIGNACIÓN DE TRABAJO* 🔧\n"
+    msg += linea_separadora + "\n"
+    msg += f"👷 *TÉCNICO(S):* {tecnicos_asignados}\n"
+    msg += f"👤 *CLIENTE:* {cliente} (Nº {nro_cliente})\n"
+    
+    if sector: msg += f"📍 *SECTOR:* {sector}\n"
+    
+    msg += f"🏠 *DIRECCIÓN:* {direccion}\n"
+    if telefono and telefono != 'Sin teléfono': 
+        msg += f"📞 *TEL:* {telefono}\n"
+        
+    msg += linea_separadora + "\n"
+    msg += f"⚙️ *RECLAMO:* {tipo_reclamo}\n"
+    if detalles: msg += f"📝 *DETALLE:* {detalles}\n"
+    
+    # Link de Google Maps si tiene georeferenciación
+    tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
+    if tiene_ubicacion:
+        maps_link = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
+        msg += linea_separadora + "\n"
+        msg += f"🗺️ *UBICACIÓN:* {maps_link}\n"
+        msg += "(Click en el link para abrir Google Maps)"
+    else:
+        msg += linea_separadora + "\n"
+        msg += "⚠️ *Sin georeferenciación exacta*"
+        
+    return msg
+
+# =========================================================
 # LOGIN
 # =========================================================
 def login_screen():
@@ -595,7 +646,7 @@ def main_app():
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error al pasar a Pendiente: {e}")
-        
+
         # --- NOVEDADES ADMIN ---
         with st.container(border=True):
             st.markdown("**📢 Novedades del Día**")
@@ -632,6 +683,32 @@ def main_app():
                             st.error(f"❌ Error: {e}")
         
         st.divider()
+
+        # =====================================================
+        # VISUALIZADOR DE MENSAJE PARA WHATSAPP (Si existe)
+        # =====================================================
+        if "mensaje_para_copiar" in st.session_state and st.session_state["mensaje_para_copiar"]:
+            with st.expander("📱 Mensaje generado para WhatsApp (Click para abrir)", expanded=True):
+                st.info("📋 Copiá el siguiente texto y enviáselo al técnico:")
+                
+                # Mostramos el texto en un área de texto para facilitar el copiado
+                st.text_area(
+                    "Texto del mensaje", 
+                    value=st.session_state["mensaje_para_copiar"], 
+                    height=250, 
+                    key="msg_display"
+                )
+                
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    if st.button("✅ Ya lo envié (Limpiar)", use_container_width=True):
+                        del st.session_state["mensaje_para_copiar"]
+                        st.rerun()
+                with col_c2:
+                    # Intento de botón de copiado directo (experimental en streamlit, pero el text_area funciona igual)
+                    st.markdown("<small><i>Tip: Selecciona el texto -> Ctrl+C</i></small>", unsafe_allow_html=True)
+            
+            st.divider()
 
         # --- CONTADORES POR TÉCNICO ---
         mask_verificados_tec = (df_reclamos['Estado_Limpio'] == "Verificado") & mask_tecnico_asignado
@@ -673,7 +750,7 @@ def main_app():
                 en_curso = len(df_filtrado)
                 verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
                 total = en_curso + verificados
-                st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {verificados})**")
+                st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {total_verificados})**")
                 
                 for idx, row in df_filtrado.iterrows():
                     renderizar_tarjeta(
@@ -753,14 +830,23 @@ def main_app():
                                         col_estado = df_reclamos.columns.get_loc('Estado') + 1
                                         col_tecnico = df_reclamos.columns.get_loc('Técnico') + 1
                                         tecnicos_str = ", ".join(tecnicos_sel)
+                                        
+                                        # 1. Actualizar Google Sheets
                                         updates = [
                                             {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_estado), "values": [["En curso"]]},
                                             {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_tecnico), "values": [[tecnicos_str]]}
                                         ]
                                         ws_reclamos.batch_update(updates)
+                                        
+                                        # 2. Generar el mensaje para WhatsApp
+                                        mensaje_whatsapp = generar_mensaje_asignacion(row, tecnicos_str)
+                                        
+                                        # 3. Guardar el mensaje en la sesión para mostrarlo después del rerun
+                                        st.session_state["mensaje_para_copiar"] = mensaje_whatsapp
+                                        
                                         st.cache_data.clear()
                                         st.success(f"✅ Asignado a **{tecnicos_str}** y puesto En Curso.")
-                                        time.sleep(1.5)
+                                        time.sleep(0.5)
                                         st.rerun()
                                     except Exception as e:
                                         st.error(f"❌ Error al asignar: {e}")
