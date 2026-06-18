@@ -750,7 +750,8 @@ def main_app():
                 en_curso = len(df_filtrado)
                 verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
                 total = en_curso + verificados
-                st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {total_verificados})**")
+                # CORRECCIÓN AQUÍ: Se cambió {total_verificados} por {verificados}
+                st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {verificados})**")
                 
                 for idx, row in df_filtrado.iterrows():
                     renderizar_tarjeta(
