@@ -444,6 +444,11 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     # Verificar si hay detalles y limpiarlos
     if detalles == '*' or detalles == 'nan': detalles = ""
     
+    # EXTRAER Y LIMPIAR DATO DEL PRECINTO
+    precinto = ''
+    if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '']:
+        precinto = str(row.get('precinto_cliente'))
+    
     # Construcción del texto
     linea_separadora = "------------------------------------------------"
     
@@ -457,6 +462,12 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     msg += f"🏠 *DIRECCIÓN:* {direccion}\n"
     if telefono and telefono != 'Sin teléfono': 
         msg += f"📞 *TEL:* {telefono}\n"
+        
+    # AGREGAR PRECINTO AL MENSAJE
+    if precinto:
+        msg += f"🔒 *PRECINTO:* {precinto}\n"
+    else:
+        msg += f"🔒 *PRECINTO:* No cuenta con número de precinto\n"
         
     msg += linea_separadora + "\n"
     msg += f"⚙️ *RECLAMO:* {tipo_reclamo}\n"
@@ -750,7 +761,6 @@ def main_app():
                 en_curso = len(df_filtrado)
                 verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
                 total = en_curso + verificados
-                # CORRECCIÓN AQUÍ: Se cambió {total_verificados} por {verificados}
                 st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {verificados})**")
                 
                 for idx, row in df_filtrado.iterrows():
