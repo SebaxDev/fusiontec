@@ -865,24 +865,38 @@ def main_app():
             st.success("🎉 No hay reclamos Pendientes.")
 
         # =====================================================================
-        # SECCIÓN VERIFICADOS (LISTA COMPACTA EXCLUSIVA ADMIN - CORREGIDA)
+        # SECCIÓN VERIFICADOS (LISTA COMPACTA EXCLUSIVA ADMIN)
         # =====================================================================
         st.divider()
         df_verificados_lista = df_reclamos[df_reclamos['Estado_Limpio'] == "Verificado"].copy()
 
         if not df_verificados_lista.empty:
             with st.expander(f"✅ Reclamos Verificados - Control ({len(df_verificados_lista)})"):
-                # Seleccionar solo las columnas deseadas si existen en la hoja
+                # Seleccionar y ordenar las columnas deseadas
                 cols_disponibles = []
                 if 'Nº Cliente' in df_verificados_lista.columns:
                     cols_disponibles.append('Nº Cliente')
                 if 'Nombre' in df_verificados_lista.columns:
                     cols_disponibles.append('Nombre')
+                
+                # Agregar columna de precinto si existe (viene del merge)
+                if 'precinto_cliente' in df_verificados_lista.columns:
+                    cols_disponibles.append('precinto_cliente')
+                
                 cols_disponibles.append('Tecnico_Limpio') # Esta siempre existe porque la creamos
                 
                 df_verif_compact = df_verificados_lista[cols_disponibles].copy()
-                df_verif_compact.rename(columns={'Tecnico_Limpio': 'Técnico'}, inplace=True)
-                df_verif_compact = df_verif_compact.fillna('Sin asignar')
+                
+                # Renombrar columnas para que se vean prolijas en la tabla
+                nuevos_nombres = {
+                    'Tecnico_Limpio': 'Técnico',
+                    'precinto_cliente': 'Precinto'
+                }
+                df_verif_compact.rename(columns=nuevos_nombres, inplace=True)
+                
+                # Reemplazar valores nulos del precinto por un texto más claro
+                df_verif_compact['Precinto'] = df_verif_compact['Precinto'].fillna('Sin precinto')
+                df_verif_compact['Técnico'] = df_verif_compact['Técnico'].fillna('Sin asignar')
                 
                 st.dataframe(
                     df_verif_compact, 
