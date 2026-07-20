@@ -324,12 +324,11 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                     st.error(f"Error al actualizar: {e}")
 
 # =========================================================
-# GENERADOR DE PDF
+# GENERADOR DE PDF (Original - Resumen por Técnico)
 # =========================================================
 class PDFReporte(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 12)
-        # TÍTULO ACTUALIZADO
         self.cell(0, 10, f'Resumen de los Trabajos del Día - {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
         self.ln(5)
 
@@ -361,7 +360,6 @@ def generar_pdf(df, fecha_str):
         df_tec = df[df['Tecnico_Grupo'] == tecnico]
         count_tec = len(df_tec)
         
-        # CÁLCULO DE OK Y PENDIENTES PARA EL ENCABEZADO
         count_ok = len(df_tec[df_tec['Estado_Limpio'] == 'Verificado'])
         count_pendientes = count_tec - count_ok
         
@@ -376,12 +374,10 @@ def generar_pdf(df, fecha_str):
             current_y = margin_y
 
         tecnico_safe = tecnico.encode('latin-1', 'replace').decode('latin-1')
-        # .title() PASA EL NOMBRE DE MAYÚSCULAS A MAYÚSCULA INICIAL (Ej: CONEJO -> Conejo)
         tecnico_display = tecnico_safe.title()
         
         pdf.set_xy(current_x, current_y)
         pdf.set_font('Helvetica', 'B', 9)
-        # ENCABEZADO ACTUALIZADO CON DETALLE DE OK Y PENDIENTES
         pdf.cell(col_width, 5, f"Técnico: {tecnico_display} ({count_tec}) ({count_ok} OK - {count_pendientes} Pendientes)", 0, 1)
         pdf.line(current_x, current_y + 5, current_x + col_width, current_y + 5)
         current_y += 7
@@ -425,6 +421,133 @@ def generar_pdf(df, fecha_str):
     return bytes(pdf.output())
 
 # =========================================================
+# GENERADOR DE PDF VERIFICADOS DETALLADO (NUEVO - Lineal)
+# =========================================================
+class PDFVerificados(FPDF):
+    def header(self):
+        self.set_font('Helvetica', 'B', 11)
+        self.cell(0, 8, f'Trabajos Verificados - {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
+        self.ln(3)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Helvetica', 'I', 8)
+        self.cell(0, 10, f'Página {self.page_no()} / {self.alias_nb_pages()}', 0, 0, 'C')
+
+
+def generar_pdf_verificados_detallado(df_verificados):
+    """
+    Genera un PDF lineal con tabla de verificados.
+    Columnas: Nº Cliente | Nombre | Tipo de Reclamo | Precinto | Técnico
+    """
+    pdf = PDFVerificados('L', 'mm', 'A4')  # 'L' = Landscape (apaisado) para más espacio
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.alias_nb_pages()
+    pdf.add_page()
+
+    # === DEFINICIÓN DE COLUMNAS (ancho total A4 apaisado ~277mm) ===
+    margin_x = 8
+    usable_width = 277 - (margin_x * 2)  # 261mm disponibles
+
+    col_cliente = 28       # Nº Cliente
+    col_nombre = 65        # Nombre
+    col_tipo = 80          # Tipo de reclamo
+    col_precinto = 35      # Precinto
+    col_tecnico = 53       # Técnico
+    # Total: 261mm
+
+    col_widths = [col_cliente, col_nombre, col_tipo, col_precinto, col_tecnico]
+    col_headers = ['Nº Cliente', 'Nombre', 'Tipo de Reclamo', 'Precinto', 'Técnico']
+    col_x_positions = [margin_x]
+    for w in col_widths[:-1]:
+        col_x_positions.append(col_x_positions[-1] + w)
+
+    row_height = 6
+    header_height = 8
+    margin_y = 15
+
+    # === CONTADOR TOTAL ===
+    total_verificados = len(df_verificados)
+
+    # === TÍTULO CON CONTADOR ===
+    pdf.set_xy(margin_x, margin_y)
+    pdf.set_font('Helvetica', 'B', 10)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(usable_width, 6, f'Total de trabajos verificados: {total_verificados}', 0, 1, 'L', fill=True)
+    pdf.ln(3)
+
+    # === ENCABEZADO DE TABLA ===
+    current_y = pdf.get_y()
+
+    pdf.set_font('Helvetica', 'B', 8)
+    pdf.set_fill_color(60, 60, 60)
+    pdf.set_text_color(255, 255, 255)  # Texto blanco
+
+    for i, header in enumerate(col_headers):
+        header_safe = header.encode('latin-1', 'replace').decode('latin-1')
+        pdf.set_xy(col_x_positions[i], current_y)
+        pdf.cell(col_widths[i], header_height, header_safe, 1, 0, 'C', fill=True)
+
+    pdf.set_text_color(0, 0, 0)  # Volver a negro
+    current_y += header_height
+
+    # === FILAS DE DATOS ===
+    pdf.set_font('Helvetica', '', 7.5)
+
+    fila_num = 0
+    for idx, row in df_verificados.iterrows():
+        # Extraer y limpiar datos
+        nro_cliente = str(row.get('Nº Cliente', '')).encode('latin-1', 'replace').decode('latin-1')
+        nombre = str(row.get('Nombre', '')).encode('latin-1', 'replace').decode('latin-1')
+        tipo_reclamo = str(row.get('Tipo de reclamo', '')).encode('latin-1', 'replace').decode('latin-1')
+        
+        # Precinto: puede ser NaN
+        precinto_raw = row.get('precinto_cliente', '')
+        if pd.notna(precinto_raw) and str(precinto_raw) not in ['nan', '*', '', ' ']:
+            precinto = str(precinto_raw).encode('latin-1', 'replace').decode('latin-1')
+        else:
+            precinto = '-'
+        
+        # Técnico: puede ser NaN
+        tecnico_raw = row.get('Tecnico_Limpio', '')
+        if pd.notna(tecnico_raw) and str(tecnico_raw).strip() not in ['nan', '', ' ']:
+            tecnico = str(tecnico_raw).encode('latin-1', 'replace').decode('latin-1')
+        else:
+            tecnico = 'Sin asignar'
+
+        datos_fila = [nro_cliente, nombre, tipo_reclamo, precinto, tecnico]
+
+        # Color de fondo alternado para facilitar lectura
+        if fila_num % 2 == 0:
+            pdf.set_fill_color(255, 255, 255)
+        else:
+            pdf.set_fill_color(245, 245, 245)
+
+        # Dibujar cada celda con truncado si es necesario
+        for i, dato in enumerate(datos_fila):
+            ancho_disponible = col_widths[i] - 2  # -2mm de padding interno
+
+            # Truncar si el texto es más ancho que la celda
+            if pdf.get_string_width(dato) > ancho_disponible:
+                while pdf.get_string_width(dato + "..") > ancho_disponible and len(dato) > 3:
+                    dato = dato[:-1]
+                dato = dato.rstrip(' .-') + ".."
+
+            pdf.set_xy(col_x_positions[i] + 1, current_y)
+            pdf.cell(col_widths[i] - 2, row_height, dato, 1, 0, 'L', fill=True)
+
+        current_y += row_height
+        fila_num += 1
+
+    # === PIE DE TABLA ===
+    pdf.ln(3)
+    pdf.set_font('Helvetica', 'I', 7)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 5, f'Documento generado el {datetime.now().strftime("%d/%m/%Y a las %H:%M")} - Fusion App Técnicos', 0, 1, 'C')
+
+    return bytes(pdf.output())
+
+# =========================================================
 # GENERADOR DE MENSAJE WHATSAPP (Copia y Pega)
 # =========================================================
 def generar_mensaje_asignacion(row, tecnicos_asignados):
@@ -432,7 +555,6 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     Genera un texto formateado con los datos del reclamo para enviar por WhatsApp.
     """
     
-    # Datos básicos
     cliente = str(row.get('Nombre', 'Sin Nombre'))
     nro_cliente = str(row.get('Nº Cliente', ''))
     direccion = str(row.get('Dirección', 'Sin dirección'))
@@ -441,15 +563,12 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     detalles = str(row.get('Detalles', ''))
     sector = str(row.get('Sector', ''))
     
-    # Verificar si hay detalles y limpiarlos
     if detalles == '*' or detalles == 'nan': detalles = ""
     
-    # EXTRAER Y LIMPIAR DATO DEL PRECINTO
     precinto = ''
     if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '']:
         precinto = str(row.get('precinto_cliente'))
     
-    # Construcción del texto
     linea_separadora = "------------------------------------------------"
     
     msg = f"🔧 *NUEVA ASIGNACIÓN DE TRABAJO* 🔧\n"
@@ -463,7 +582,6 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     if telefono and telefono != 'Sin teléfono': 
         msg += f"📞 *TEL:* {telefono}\n"
         
-    # AGREGAR PRECINTO AL MENSAJE
     if precinto:
         msg += f"🔒 *PRECINTO:* {precinto}\n"
     else:
@@ -473,7 +591,6 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     msg += f"⚙️ *RECLAMO:* {tipo_reclamo}\n"
     if detalles: msg += f"📝 *DETALLE:* {detalles}\n"
     
-    # Link de Google Maps si tiene georeferenciación
     tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
     if tiene_ubicacion:
         maps_link = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
@@ -594,7 +711,7 @@ def main_app():
             col_p1, col_p2, col_p3 = st.columns(3)
             
             with col_p1:
-                if st.button("📄 Generar PDF", use_container_width=True):
+                if st.button("📄 PDF Resumen", use_container_width=True):
                     with st.spinner("Generando PDF..."):
                         try:
                             estados_pdf = ["En curso", "Verificado"]
@@ -603,7 +720,7 @@ def main_app():
                             
                             pdf_bytes = generar_pdf(df_activos_pdf, datetime.now().strftime("%d/%m/%Y"))
                             st.download_button(
-                                label="⬇️ Descargar PDF",
+                                label="⬇️ Descargar PDF Resumen",
                                 data=pdf_bytes,
                                 file_name=f"Reclamos_{datetime.now().strftime('%Y%m%d')}.pdf",
                                 mime="application/pdf",
@@ -658,6 +775,47 @@ def main_app():
                     except Exception as e:
                         st.error(f"Error al pasar a Pendiente: {e}")
 
+        # --- BOTÓN NUEVO: PDF VERIFICADOS DETALLADO ---
+        with st.container(border=True):
+            st.markdown("**📋 Exportación Detallada**")
+            col_d1, col_d2 = st.columns(2)
+            
+            with col_d1:
+                if st.button("✅ PDF Verificados Detallado", use_container_width=True, type="primary"):
+                    with st.spinner("Generando PDF detallado..."):
+                        try:
+                            # Filtrar SOLO verificados
+                            df_verif_pdf = df_reclamos[mask_verificados].copy()
+                            
+                            if df_verif_pdf.empty:
+                                st.warning("No hay reclamos verificados para exportar.")
+                            else:
+                                # Ordenar por técnico y luego por número de cliente
+                                df_verif_pdf = df_verif_pdf.sort_values(
+                                    by=['Tecnico_Limpio', 'Nº Cliente'], 
+                                    ascending=[True, True]
+                                )
+                                
+                                pdf_bytes = generar_pdf_verificados_detallado(df_verif_pdf)
+                                st.download_button(
+                                    label="⬇️ Descargar PDF Verificados",
+                                    data=pdf_bytes,
+                                    file_name=f"Verificados_Detallado_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
+                        except Exception as e:
+                            st.error(f"Error al generar PDF: {e}")
+            
+            with col_d2:
+                st.caption("""
+                **Este PDF incluye:**
+                - Solo reclamos con estado **Verificado**
+                - Formato de tabla lineal (apaisado)
+                - Columnas: Nº Cliente, Nombre, Tipo, Precinto, Técnico
+                - Ordenado por técnico
+                """)
+
         # --- NOVEDADES ADMIN ---
         with st.container(border=True):
             st.markdown("**📢 Novedades del Día**")
@@ -702,7 +860,6 @@ def main_app():
             with st.expander("📱 Mensaje generado para WhatsApp (Click para abrir)", expanded=True):
                 st.info("📋 Copiá el siguiente texto y enviáselo al técnico:")
                 
-                # Mostramos el texto en un área de texto para facilitar el copiado
                 st.text_area(
                     "Texto del mensaje", 
                     value=st.session_state["mensaje_para_copiar"], 
@@ -716,7 +873,6 @@ def main_app():
                         del st.session_state["mensaje_para_copiar"]
                         st.rerun()
                 with col_c2:
-                    # Intento de botón de copiado directo (experimental en streamlit, pero el text_area funciona igual)
                     st.markdown("<small><i>Tip: Selecciona el texto -> Ctrl+C</i></small>", unsafe_allow_html=True)
             
             st.divider()
@@ -842,17 +998,14 @@ def main_app():
                                         col_tecnico = df_reclamos.columns.get_loc('Técnico') + 1
                                         tecnicos_str = ", ".join(tecnicos_sel)
                                         
-                                        # 1. Actualizar Google Sheets
                                         updates = [
                                             {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_estado), "values": [["En curso"]]},
                                             {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_tecnico), "values": [[tecnicos_str]]}
                                         ]
                                         ws_reclamos.batch_update(updates)
                                         
-                                        # 2. Generar el mensaje para WhatsApp
                                         mensaje_whatsapp = generar_mensaje_asignacion(row, tecnicos_str)
                                         
-                                        # 3. Guardar el mensaje en la sesión para mostrarlo después del rerun
                                         st.session_state["mensaje_para_copiar"] = mensaje_whatsapp
                                         
                                         st.cache_data.clear()
@@ -872,29 +1025,25 @@ def main_app():
 
         if not df_verificados_lista.empty:
             with st.expander(f"✅ Reclamos Verificados - Control ({len(df_verificados_lista)})"):
-                # Seleccionar y ordenar las columnas deseadas
                 cols_disponibles = []
                 if 'Nº Cliente' in df_verificados_lista.columns:
                     cols_disponibles.append('Nº Cliente')
                 if 'Nombre' in df_verificados_lista.columns:
                     cols_disponibles.append('Nombre')
                 
-                # Agregar columna de precinto si existe (viene del merge)
                 if 'precinto_cliente' in df_verificados_lista.columns:
                     cols_disponibles.append('precinto_cliente')
                 
-                cols_disponibles.append('Tecnico_Limpio') # Esta siempre existe porque la creamos
+                cols_disponibles.append('Tecnico_Limpio')
                 
                 df_verif_compact = df_verificados_lista[cols_disponibles].copy()
                 
-                # Renombrar columnas para que se vean prolijas en la tabla
                 nuevos_nombres = {
                     'Tecnico_Limpio': 'Técnico',
                     'precinto_cliente': 'Precinto'
                 }
                 df_verif_compact.rename(columns=nuevos_nombres, inplace=True)
                 
-                # Reemplazar valores nulos del precinto por un texto más claro
                 df_verif_compact['Precinto'] = df_verif_compact['Precinto'].fillna('Sin precinto')
                 df_verif_compact['Técnico'] = df_verif_compact['Técnico'].fillna('Sin asignar')
                 
@@ -935,14 +1084,13 @@ def main_app():
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
-# Intentar auto-login con cookie
 if not st.session_state.authenticated:
     saved_user = load_cookie("fusion_user")
     if saved_user:
         try:
             ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
             df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
-            df_usuarios.columns = df_usuarios.columns.str.strip() # Aplicar limpieza aquí también
+            df_usuarios.columns = df_usuarios.columns.str.strip()
             user_row = df_usuarios[(df_usuarios['username'] == saved_user)]
             
             if not user_row.empty:
