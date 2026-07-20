@@ -126,7 +126,6 @@ def cargar_datos():
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
     
-    # LIMPIEZA DE NOMBRES DE COLUMNAS: Evita errores por espacios accidentales en Google Sheets
     df_reclamos.columns = df_reclamos.columns.str.strip()
     df_clientes.columns = df_clientes.columns.str.strip()
     df_usuarios.columns = df_usuarios.columns.str.strip()
@@ -287,7 +286,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
                                 except Exception as e:
                                     st.error(f"❌ Error: {e}")
 
-        # OBSERVACIÓN + VERIFICAR
         st.markdown("---")
         with st.form(f"form_verify_{sheet_row_num}"):
             obs = st.text_input(
@@ -421,129 +419,148 @@ def generar_pdf(df, fecha_str):
     return bytes(pdf.output())
 
 # =========================================================
-# GENERADOR DE PDF VERIFICADOS DETALLADO (NUEVO - Lineal)
+# GENERADOR DE PDF VERIFICADOS DETALLADO (CORREGIDO - A4 Vertical)
 # =========================================================
 class PDFVerificados(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 11)
         self.cell(0, 8, f'Trabajos Verificados - {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
-        self.ln(3)
+        self.ln(2)
 
     def footer(self):
         self.set_y(-15)
         self.set_font('Helvetica', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()} / {self.alias_nb_pages()}', 0, 0, 'C')
+        self.cell(0, 10, f'Pagina {self.page_no()}/{{nb}}', 0, 0, 'C')
 
 
 def generar_pdf_verificados_detallado(df_verificados):
     """
-    Genera un PDF lineal con tabla de verificados.
-    Columnas: Nº Cliente | Nombre | Tipo de Reclamo | Precinto | Técnico
+    Genera un PDF A4 VERTICAL con tabla lineal de verificados.
+    Control manual de salto de página para no cortar filas.
     """
-    pdf = PDFVerificados('L', 'mm', 'A4')  # 'L' = Landscape (apaisado) para más espacio
-    pdf.set_auto_page_break(auto=True, margin=20)
-    pdf.alias_nb_pages()
+    pdf = PDFVerificados('P', 'mm', 'A4')
+    pdf.set_auto_page_break(auto=False)  # Control manual absoluto
+    pdf.alias_nb_pages()  # Registra {nb} para total de páginas
     pdf.add_page()
 
-    # === DEFINICIÓN DE COLUMNAS (ancho total A4 apaisado ~277mm) ===
-    margin_x = 8
-    usable_width = 277 - (margin_x * 2)  # 261mm disponibles
+    # === DIMENSIONES A4 VERTICAL ===
+    margin_x = 10
+    page_width = 210
+    usable_width = page_width - (margin_x * 2)  # 190mm
 
-    col_cliente = 28       # Nº Cliente
-    col_nombre = 65        # Nombre
-    col_tipo = 80          # Tipo de reclamo
-    col_precinto = 35      # Precinto
-    col_tecnico = 53       # Técnico
-    # Total: 261mm
+    # Alturas de referencia
+    content_start_y = 25    # Donde empieza el contenido (después del header)
+    footer_zone_y = 282     # Donde empieza la zona del footer (297 - 15)
+    row_height = 6          # Altura de cada fila de datos
+    header_height = 7       # Altura del encabezado de tabla
+
+    # === ANCHOS DE COLUMNA (total = 190mm) ===
+    col_cliente = 22        # Nº Cliente
+    col_nombre = 48         # Nombre
+    col_tipo = 55           # Tipo de reclamo
+    col_precinto = 30       # Precinto
+    col_tecnico = 35        # Técnico
+    # 22 + 48 + 55 + 30 + 35 = 190 ✓
 
     col_widths = [col_cliente, col_nombre, col_tipo, col_precinto, col_tecnico]
-    col_headers = ['Nº Cliente', 'Nombre', 'Tipo de Reclamo', 'Precinto', 'Técnico']
-    col_x_positions = [margin_x]
+    col_headers = ['Nº Cliente', 'Nombre', 'Tipo de Reclamo', 'Precinto', 'Tecnico']
+
+    # Calcular posición X de cada columna
+    col_x = [margin_x]
     for w in col_widths[:-1]:
-        col_x_positions.append(col_x_positions[-1] + w)
+        col_x.append(col_x[-1] + w)
 
-    row_height = 6
-    header_height = 8
-    margin_y = 15
+    # === FUNCIÓN INTERNA: Dibujar encabezado de tabla ===
+    def dibujar_encabezado_tabla(y_pos):
+        pdf.set_font('Helvetica', 'B', 7.5)
+        pdf.set_fill_color(50, 50, 50)
+        pdf.set_text_color(255, 255, 255)
+        for i, header in enumerate(col_headers):
+            header_safe = header.encode('latin-1', 'replace').decode('latin-1')
+            pdf.set_xy(col_x[i], y_pos)
+            pdf.cell(col_widths[i], header_height, header_safe, 1, 0, 'C', fill=True)
+        pdf.set_text_color(0, 0, 0)
+        return y_pos + header_height
 
-    # === CONTADOR TOTAL ===
-    total_verificados = len(df_verificados)
+    # === BARRA DE TITULO CON TOTAL ===
+    current_y = content_start_y
+    pdf.set_xy(margin_x, current_y)
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(220, 220, 220)
+    pdf.cell(usable_width, 6, f'Total de trabajos verificados: {len(df_verificados)}', 0, 1, 'L', fill=True)
+    current_y += 8
 
-    # === TÍTULO CON CONTADOR ===
-    pdf.set_xy(margin_x, margin_y)
-    pdf.set_font('Helvetica', 'B', 10)
-    pdf.set_fill_color(230, 230, 230)
-    pdf.cell(usable_width, 6, f'Total de trabajos verificados: {total_verificados}', 0, 1, 'L', fill=True)
-    pdf.ln(3)
-
-    # === ENCABEZADO DE TABLA ===
-    current_y = pdf.get_y()
-
-    pdf.set_font('Helvetica', 'B', 8)
-    pdf.set_fill_color(60, 60, 60)
-    pdf.set_text_color(255, 255, 255)  # Texto blanco
-
-    for i, header in enumerate(col_headers):
-        header_safe = header.encode('latin-1', 'replace').decode('latin-1')
-        pdf.set_xy(col_x_positions[i], current_y)
-        pdf.cell(col_widths[i], header_height, header_safe, 1, 0, 'C', fill=True)
-
-    pdf.set_text_color(0, 0, 0)  # Volver a negro
-    current_y += header_height
+    # === ENCABEZADO DE TABLA (primera página) ===
+    current_y = dibujar_encabezado_tabla(current_y)
 
     # === FILAS DE DATOS ===
-    pdf.set_font('Helvetica', '', 7.5)
-
+    pdf.set_font('Helvetica', '', 7)
     fila_num = 0
+
     for idx, row in df_verificados.iterrows():
-        # Extraer y limpiar datos
+        # --------------------------------------------------
+        # CONTROL DE SALTO DE PÁGINA: ¿La fila ENTERA cabe?
+        # --------------------------------------------------
+        if current_y + row_height > footer_zone_y:
+            pdf.add_page()                          # Nueva página (header se dibuja solo)
+            current_y = content_start_y             # Reset Y
+            current_y = dibujar_encabezado_tabla(current_y)  # Re-dibujar encabezado
+
+        # --- Extraer datos ---
         nro_cliente = str(row.get('Nº Cliente', '')).encode('latin-1', 'replace').decode('latin-1')
         nombre = str(row.get('Nombre', '')).encode('latin-1', 'replace').decode('latin-1')
         tipo_reclamo = str(row.get('Tipo de reclamo', '')).encode('latin-1', 'replace').decode('latin-1')
-        
-        # Precinto: puede ser NaN
+
         precinto_raw = row.get('precinto_cliente', '')
         if pd.notna(precinto_raw) and str(precinto_raw) not in ['nan', '*', '', ' ']:
             precinto = str(precinto_raw).encode('latin-1', 'replace').decode('latin-1')
         else:
             precinto = '-'
-        
-        # Técnico: puede ser NaN
+
         tecnico_raw = row.get('Tecnico_Limpio', '')
         if pd.notna(tecnico_raw) and str(tecnico_raw).strip() not in ['nan', '', ' ']:
             tecnico = str(tecnico_raw).encode('latin-1', 'replace').decode('latin-1')
         else:
             tecnico = 'Sin asignar'
 
-        datos_fila = [nro_cliente, nombre, tipo_reclamo, precinto, tecnico]
+        datos = [nro_cliente, nombre, tipo_reclamo, precinto, tecnico]
 
-        # Color de fondo alternado para facilitar lectura
+        # --- Color de fondo alternado ---
         if fila_num % 2 == 0:
             pdf.set_fill_color(255, 255, 255)
         else:
-            pdf.set_fill_color(245, 245, 245)
+            pdf.set_fill_color(242, 242, 242)
 
-        # Dibujar cada celda con truncado si es necesario
-        for i, dato in enumerate(datos_fila):
-            ancho_disponible = col_widths[i] - 2  # -2mm de padding interno
+        # --- Dibujar cada celda con truncado ---
+        for i, dato in enumerate(datos):
+            ancho_celda = col_widths[i] - 2  # 1mm padding por lado
 
-            # Truncar si el texto es más ancho que la celda
-            if pdf.get_string_width(dato) > ancho_disponible:
-                while pdf.get_string_width(dato + "..") > ancho_disponible and len(dato) > 3:
+            # Truncar si excede el ancho disponible
+            if pdf.get_string_width(dato) > ancho_celda:
+                while pdf.get_string_width(dato + "..") > ancho_celda and len(dato) > 3:
                     dato = dato[:-1]
-                dato = dato.rstrip(' .-') + ".."
+                dato = dato.rstrip(' .-,') + ".."
 
-            pdf.set_xy(col_x_positions[i] + 1, current_y)
+            pdf.set_xy(col_x[i] + 1, current_y)
             pdf.cell(col_widths[i] - 2, row_height, dato, 1, 0, 'L', fill=True)
 
         current_y += row_height
         fila_num += 1
 
-    # === PIE DE TABLA ===
-    pdf.ln(3)
+    # === PIE DEL DOCUMENTO ===
+    if current_y + 10 > footer_zone_y:
+        pdf.add_page()
+        current_y = content_start_y
+
+    current_y += 3
+    pdf.set_xy(margin_x, current_y)
     pdf.set_font('Helvetica', 'I', 7)
-    pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 5, f'Documento generado el {datetime.now().strftime("%d/%m/%Y a las %H:%M")} - Fusion App Técnicos', 0, 1, 'C')
+    pdf.set_text_color(130, 130, 130)
+    pdf.cell(
+        usable_width, 5,
+        f'Documento generado el {datetime.now().strftime("%d/%m/%Y a las %H:%M")} - Fusion App Tecnicos',
+        0, 1, 'C'
+    )
 
     return bytes(pdf.output())
 
@@ -551,10 +568,6 @@ def generar_pdf_verificados_detallado(df_verificados):
 # GENERADOR DE MENSAJE WHATSAPP (Copia y Pega)
 # =========================================================
 def generar_mensaje_asignacion(row, tecnicos_asignados):
-    """
-    Genera un texto formateado con los datos del reclamo para enviar por WhatsApp.
-    """
-    
     cliente = str(row.get('Nombre', 'Sin Nombre'))
     nro_cliente = str(row.get('Nº Cliente', ''))
     direccion = str(row.get('Dirección', 'Sin dirección'))
@@ -646,7 +659,6 @@ def main_app():
     es_admin = st.session_state.get('es_admin', False)
     rol = st.session_state.rol
 
-    # Header
     col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
         st.markdown(f"### 👷 {st.session_state.user_name} ({'Admin' if es_admin else 'Técnico'})")
@@ -662,14 +674,13 @@ def main_app():
 
     st.divider()
 
-    # Datos
     df_reclamos, _, df_clientes_raw, df_novedades = cargar_datos()
     ws_reclamos, ws_clientes, _, ws_novedades = init_google_sheets()
 
     mask_tecnico_asignado = df_reclamos['Tecnico_Limpio'].notna()
 
     # =====================================================
-    # NOVEDADES - Visible para TODOS
+    # NOVEDADES
     # =====================================================
     if not df_novedades.empty:
         ultima = df_novedades.iloc[-1]
@@ -684,7 +695,6 @@ def main_app():
     if es_admin:
         st.markdown("### 👑 Panel de Administración")
         
-        # --- RESUMEN DEL DÍA ---
         mask_en_curso = df_reclamos['Estado_Limpio'] == "En curso"
         mask_verificados = df_reclamos['Estado_Limpio'] == "Verificado"
         mask_pendientes = df_reclamos['Estado_Limpio'] == "Pendiente"
@@ -775,7 +785,7 @@ def main_app():
                     except Exception as e:
                         st.error(f"Error al pasar a Pendiente: {e}")
 
-        # --- BOTÓN NUEVO: PDF VERIFICADOS DETALLADO ---
+        # --- PDF VERIFICADOS DETALLADO ---
         with st.container(border=True):
             st.markdown("**📋 Exportación Detallada**")
             col_d1, col_d2 = st.columns(2)
@@ -784,13 +794,11 @@ def main_app():
                 if st.button("✅ PDF Verificados Detallado", use_container_width=True, type="primary"):
                     with st.spinner("Generando PDF detallado..."):
                         try:
-                            # Filtrar SOLO verificados
                             df_verif_pdf = df_reclamos[mask_verificados].copy()
                             
                             if df_verif_pdf.empty:
                                 st.warning("No hay reclamos verificados para exportar.")
                             else:
-                                # Ordenar por técnico y luego por número de cliente
                                 df_verif_pdf = df_verif_pdf.sort_values(
                                     by=['Tecnico_Limpio', 'Nº Cliente'], 
                                     ascending=[True, True]
@@ -811,7 +819,7 @@ def main_app():
                 st.caption("""
                 **Este PDF incluye:**
                 - Solo reclamos con estado **Verificado**
-                - Formato de tabla lineal (apaisado)
+                - Formato de tabla lineal (A4 vertical)
                 - Columnas: Nº Cliente, Nombre, Tipo, Precinto, Técnico
                 - Ordenado por técnico
                 """)
@@ -854,7 +862,7 @@ def main_app():
         st.divider()
 
         # =====================================================
-        # VISUALIZADOR DE MENSAJE PARA WHATSAPP (Si existe)
+        # VISUALIZADOR DE MENSAJE PARA WHATSAPP
         # =====================================================
         if "mensaje_para_copiar" in st.session_state and st.session_state["mensaje_para_copiar"]:
             with st.expander("📱 Mensaje generado para WhatsApp (Click para abrir)", expanded=True):
@@ -1018,7 +1026,7 @@ def main_app():
             st.success("🎉 No hay reclamos Pendientes.")
 
         # =====================================================================
-        # SECCIÓN VERIFICADOS (LISTA COMPACTA EXCLUSIVA ADMIN)
+        # SECCIÓN VERIFICADOS (LISTA COMPACTA)
         # =====================================================================
         st.divider()
         df_verificados_lista = df_reclamos[df_reclamos['Estado_Limpio'] == "Verificado"].copy()
@@ -1079,7 +1087,7 @@ def main_app():
             )
 
 # =========================================================
-# FLUJO PRINCIPAL (con auto-login por cookie)
+# FLUJO PRINCIPAL
 # =========================================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
