@@ -85,8 +85,8 @@ SCOPES = [
 # LISTA DE TÉCNICOS
 # =========================================================
 TECNICOS_DISPONIBLES = [
-    "CONEJO", "JUAN", "JUNIOR", "MAXI", "MARKI",
-    "RAMON", "RENE", "ROQUE", "VIKI", "OFICINA", "BASE"
+    "BLUME", "CONEJO", "GABRIEL", "JUAN", "JUNIOR", "MAXI", "MARKI",
+    "PEDRITO", "RAMON", "RENE", "ROQUE", "VIKI", "OFICINA", "BASE"
 ]
 
 # =========================================================
