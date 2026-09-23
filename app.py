@@ -55,7 +55,7 @@ st.set_page_config(
 )
 
 # =========================================================
-# CSS COMPACTO — Reduce spacing global para split-tab
+# CSS COMPACTO
 # =========================================================
 st.markdown("""
 <style>
@@ -74,7 +74,6 @@ st.markdown("""
     .stCaption {
         font-size: 0.78rem !important;
     }
-    /* Reduce spacing between elements inside containers */
     .element-container:has(.stMarkdown) {
         margin-bottom: -0.15rem !important;
     }
@@ -109,10 +108,10 @@ SCOPES = [
 ]
 
 # =========================================================
-# MAPEO DE COLUMNAS DE CLIENTES (evita índices hardcoded)
+# NOMBRES DE COLUMNAS EN HOJA CLIENTES
 # =========================================================
-COL_CLIENTE_PRECINTO = 'N° de Precinto'  # Nombre en hoja Clientes
-COL_CLIENTE_OBS = 'Observaciones'         # Ajustar al nombre real
+COL_CLIENTE_PRECINTO = 'N° de Precinto'
+COL_CLIENTE_OBS = 'Observaciones'
 COL_CLIENTE_LAT = 'Latitud'
 COL_CLIENTE_LON = 'Longitud'
 
@@ -152,15 +151,34 @@ def init_google_sheets():
         st.stop()
 
 # =========================================================
-# HELPER: Obtener índice de columna por nombre (seguro)
+# RESOLVER ÍNDICES DE COLUMNAS UNA SOLA VEZ
 # =========================================================
-def get_col_index(ws, col_name):
-    """Devuelve el índice (1-based) de una columna por su nombre."""
-    headers = ws.row_values(1)
-    headers = [h.strip() for h in headers]
-    if col_name in headers:
-        return headers.index(col_name) + 1
-    return None
+def resolver_col_indices_clientes(ws_clientes):
+    """
+    Lee los headers de la hoja Clientes UNA vez y devuelve
+    un dict con los índices (1-based) de cada columna buscada.
+    Se almacena en session_state para no repetir la llamada API.
+    """
+    if 'clientes_col_idx' in st.session_state:
+        return st.session_state['clientes_col_idx']
+
+    result = {'precinto': None, 'obs': None, 'lat': None, 'lon': None}
+    try:
+        headers = ws_clientes.row_values(1)
+        headers = [h.strip() for h in headers]
+        if COL_CLIENTE_PRECINTO in headers:
+            result['precinto'] = headers.index(COL_CLIENTE_PRECINTO) + 1
+        if COL_CLIENTE_OBS in headers:
+            result['obs'] = headers.index(COL_CLIENTE_OBS) + 1
+        if COL_CLIENTE_LAT in headers:
+            result['lat'] = headers.index(COL_CLIENTE_LAT) + 1
+        if COL_CLIENTE_LON in headers:
+            result['lon'] = headers.index(COL_CLIENTE_LON) + 1
+    except Exception as e:
+        st.warning(f"No se pudieron leer headers de Clientes: {e}")
+
+    st.session_state['clientes_col_idx'] = result
+    return result
 
 # =========================================================
 # CARGA DE DATOS
@@ -222,12 +240,17 @@ def cargar_datos():
 # FUNCIÓN PARA DIBUJAR TARJETAS (COMPACTA)
 # =========================================================
 def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
-                       ws_clientes=None, df_clientes_raw=None, modo="en_curso"):
+                       ws_clientes=None, df_clientes_raw=None,
+                       clientes_col_idx=None, modo="en_curso"):
     """
     Renderiza una tarjeta compacta de reclamo.
+    clientes_col_idx: dict con {'precinto': int|None, 'obs': int|None, 'lat': int|None, 'lon': int|None}
     modo: "en_curso" → formulario de verificar
           "pendiente" → formulario de asignar técnico
     """
+    if clientes_col_idx is None:
+        clientes_col_idx = {'precinto': None, 'obs': None, 'lat': None, 'lon': None}
+
     sheet_row_num = row.name + 2
     horas = row['Horas_Transcurridas']
 
@@ -281,11 +304,11 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
         if not cliente_match.empty:
             cliente_fila = cliente_match.index[0] + 2
 
-    # --- Obtener índices de columna dinámicamente ---
-    col_precinto_idx = get_col_index(ws_clientes, COL_CLIENTE_PRECINTO) if ws_clientes else None
-    col_lat_idx = get_col_index(ws_clientes, COL_CLIENTE_LAT) if ws_clientes else None
-    col_lon_idx = get_col_index(ws_clientes, COL_CLIENTE_LON) if ws_clientes else None
-    col_obs_idx = get_col_index(ws_clientes, COL_CLIENTE_OBS) if ws_clientes else None
+    # --- Índices de columna (ya resueltos, sin llamada API) ---
+    col_precinto_idx = clientes_col_idx.get('precinto')
+    col_lat_idx = clientes_col_idx.get('lat')
+    col_lon_idx = clientes_col_idx.get('lon')
+    col_obs_idx = clientes_col_idx.get('obs')
 
     with st.container(border=True):
         # ── LÍNEA 1: Header con badge y tiempo ──
@@ -330,7 +353,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
 
         st.markdown(" · ".join(loc_parts), unsafe_allow_html=True)
 
-        # ── Detalles (si hay) ──
+        # ── Detalles ──
         if detalles:
             st.caption(f"📝 {detalles}")
 
@@ -362,7 +385,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                                 st.error(f"❌ {e}")
 
                 with col_edit2:
-                    # Valores actuales de lat/lon
                     lat_val = ""
                     lon_val = ""
                     if tiene_ubicacion:
@@ -479,7 +501,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
 # BUSCADOR DE RECLAMOS
 # =========================================================
 def filtrar_por_busqueda(df, query):
-    """Filtra DataFrame por texto de búsqueda en múltiples campos."""
     if not query or not query.strip():
         return df
 
@@ -497,7 +518,7 @@ def filtrar_por_busqueda(df, query):
     return df[mask]
 
 # =========================================================
-# GENERADOR DE PDF (Original - Resumen por Técnico)
+# GENERADOR DE PDF (Resumen por Técnico)
 # =========================================================
 class PDFReporte(FPDF):
     def header(self):
@@ -613,19 +634,12 @@ def generar_pdf_verificados_detallado(df_verificados):
     margin_x = 10
     page_width = 210
     usable_width = page_width - (margin_x * 2)
-
     content_start_y = 25
     footer_zone_y = 282
     row_height = 6
     header_height = 7
 
-    col_cliente = 22
-    col_nombre = 48
-    col_tipo = 55
-    col_precinto = 30
-    col_tecnico = 35
-
-    col_widths = [col_cliente, col_nombre, col_tipo, col_precinto, col_tecnico]
+    col_widths = [22, 48, 55, 30, 35]
     col_headers = ['Nº Cliente', 'Nombre', 'Tipo de Reclamo', 'Precinto', 'Tecnico']
 
     col_x = [margin_x]
@@ -811,6 +825,9 @@ def main_app():
     with col2:
         if st.button("🔄", help="Refrescar datos"):
             st.cache_data.clear()
+            # Limpiar índices cacheados para que se re-resuelvan
+            if 'clientes_col_idx' in st.session_state:
+                del st.session_state['clientes_col_idx']
             st.rerun()
     with col3:
         if st.button("🚪", help="Salir"):
@@ -822,6 +839,11 @@ def main_app():
 
     df_reclamos, _, df_clientes_raw, df_novedades = cargar_datos()
     ws_reclamos, ws_clientes, _, ws_novedades = init_google_sheets()
+
+    # ═══════════════════════════════════════════════════════
+    # RESOLVER ÍNDICES DE COLUMNAS UNA SOLA VEZ (sin API por tarjeta)
+    # ═══════════════════════════════════════════════════════
+    clientes_col_idx = resolver_col_indices_clientes(ws_clientes)
 
     mask_tecnico_asignado = df_reclamos['Tecnico_Limpio'].notna()
 
@@ -1001,7 +1023,7 @@ def main_app():
         st.divider()
 
         # =====================================================
-        # MENSAJE WHATSAPP (si hay pendiente de copiar)
+        # MENSAJE WHATSAPP
         # =====================================================
         if "mensaje_para_copiar" in st.session_state and st.session_state["mensaje_para_copiar"]:
             with st.expander("📱 Mensaje para WhatsApp (Click para abrir)", expanded=True):
@@ -1032,17 +1054,14 @@ def main_app():
         df_activos_display = df_reclamos[mask_estado_display & mask_tecnico_asignado].copy()
 
         if not df_activos_display.empty:
-            # Buscador
             search_query = st.text_input(
                 "🔍 Buscar reclamo en curso",
                 placeholder="Nº cliente, nombre, dirección, sector, técnico...",
                 key="search_reclamos_admin"
             )
 
-            # Aplicar búsqueda
             df_activos_display = filtrar_por_busqueda(df_activos_display, search_query)
 
-            # Filtro por técnico
             tecnicos_unicos = sorted(df_activos_display['Tecnico_Limpio'].dropna().unique()) if not df_activos_display.empty else []
             tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
 
@@ -1053,7 +1072,6 @@ def main_app():
 
             df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
 
-            # Mostrar contadores
             if tecnico_seleccionado == "Todos":
                 tecnicos_en_vista = sorted(df_filtrado['Tecnico_Limpio'].dropna().unique())
                 total_en_curso = len(df_filtrado)
@@ -1072,7 +1090,9 @@ def main_app():
                         for idx, row in grupo.iterrows():
                             renderizar_tarjeta(
                                 row, df_reclamos, ws_reclamos,
-                                es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw,
+                                es_admin=True, ws_clientes=ws_clientes,
+                                df_clientes_raw=df_clientes_raw,
+                                clientes_col_idx=clientes_col_idx,
                                 modo="en_curso"
                             )
             else:
@@ -1087,14 +1107,16 @@ def main_app():
                 for idx, row in df_filtrado.iterrows():
                     renderizar_tarjeta(
                         row, df_reclamos, ws_reclamos,
-                        es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw,
+                        es_admin=True, ws_clientes=ws_clientes,
+                        df_clientes_raw=df_clientes_raw,
+                        clientes_col_idx=clientes_col_idx,
                         modo="en_curso"
                     )
         else:
             st.info("ℹ️ No hay reclamos En curso con técnico asignado.")
 
         # =====================================================
-        # SECCIÓN PENDIENTES (reutiliza renderizar_tarjeta)
+        # SECCIÓN PENDIENTES
         # =====================================================
         st.divider()
         df_pendientes = df_reclamos[df_reclamos['Estado_Limpio'] == "Pendiente"].copy()
@@ -1103,7 +1125,6 @@ def main_app():
             df_pendientes = df_pendientes.sort_values(by='Horas_Transcurridas', ascending=False)
 
             with st.expander(f"📋 Reclamos Pendientes ({len(df_pendientes)})"):
-                # Buscador para pendientes
                 search_pend = st.text_input(
                     "🔍 Buscar pendiente",
                     placeholder="Nº cliente, nombre, dirección...",
@@ -1114,7 +1135,9 @@ def main_app():
                 for idx, row in df_pendientes_filtrado.iterrows():
                     renderizar_tarjeta(
                         row, df_reclamos, ws_reclamos,
-                        es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw,
+                        es_admin=True, ws_clientes=ws_clientes,
+                        df_clientes_raw=df_clientes_raw,
+                        clientes_col_idx=clientes_col_idx,
                         modo="pendiente"
                     )
         else:
@@ -1165,7 +1188,6 @@ def main_app():
             st.success("🎉 No tenés reclamos pendientes.")
             return
 
-        # Buscador para técnicos también
         search_tec = st.text_input(
             "🔍 Buscar en mis reclamos",
             placeholder="Nº cliente, nombre, dirección...",
@@ -1176,7 +1198,9 @@ def main_app():
         for idx, row in mis_reclamos.iterrows():
             renderizar_tarjeta(
                 row, df_reclamos, ws_reclamos,
-                es_admin=False, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw,
+                es_admin=False, ws_clientes=ws_clientes,
+                df_clientes_raw=df_clientes_raw,
+                clientes_col_idx=clientes_col_idx,
                 modo="en_curso"
             )
 
@@ -1187,7 +1211,6 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    # Intentar auto-login con cookie
     saved_user = load_cookie("fusion_user")
     if saved_user:
         try:
@@ -1210,7 +1233,6 @@ if not st.session_state.authenticated:
         except:
             pass
 
-    # Si no hay cookie válida, mostrar login
     login_screen()
 else:
     main_app()
