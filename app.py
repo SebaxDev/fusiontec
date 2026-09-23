@@ -55,7 +55,34 @@ st.set_page_config(
 )
 
 # =========================================================
-# INYECCIÓN PWA (manifest + meta tags)
+# CSS COMPACTO — Reduce spacing global para split-tab
+# =========================================================
+st.markdown("""
+<style>
+    .block-container {
+        padding-top: 1.2rem !important;
+        padding-bottom: 0.5rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 0.3rem 0.5rem !important;
+    }
+    .stForm {
+        padding: 0.3rem 0.5rem !important;
+    }
+    .stCaption {
+        font-size: 0.78rem !important;
+    }
+    /* Reduce spacing between elements inside containers */
+    .element-container:has(.stMarkdown) {
+        margin-bottom: -0.15rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# =========================================================
+# INYECCIÓN PWA
 # =========================================================
 st.markdown("""
 <link rel="manifest" href="static/manifest.json">
@@ -82,6 +109,14 @@ SCOPES = [
 ]
 
 # =========================================================
+# MAPEO DE COLUMNAS DE CLIENTES (evita índices hardcoded)
+# =========================================================
+COL_CLIENTE_PRECINTO = 'N° de Precinto'  # Nombre en hoja Clientes
+COL_CLIENTE_OBS = 'Observaciones'         # Ajustar al nombre real
+COL_CLIENTE_LAT = 'Latitud'
+COL_CLIENTE_LON = 'Longitud'
+
+# =========================================================
 # LISTA DE TÉCNICOS
 # =========================================================
 TECNICOS_DISPONIBLES = [
@@ -104,17 +139,28 @@ def init_google_sheets():
         ws_reclamos = spreadsheet.worksheet(WORKSHEET_RECLAMOS)
         ws_clientes = spreadsheet.worksheet(WORKSHEET_CLIENTES)
         ws_usuarios = spreadsheet.worksheet(WORKSHEET_USUARIOS)
-        
+
         try:
             ws_novedades = spreadsheet.worksheet(WORKSHEET_NOVEDADES)
         except gspread.exceptions.WorksheetNotFound:
             ws_novedades = spreadsheet.add_worksheet(title=WORKSHEET_NOVEDADES, rows=10, cols=2)
             ws_novedades.update('A1:B1', [['Fecha', 'Mensaje']])
-        
+
         return ws_reclamos, ws_clientes, ws_usuarios, ws_novedades
     except Exception as e:
         st.error(f"Error de conexión: {e}")
         st.stop()
+
+# =========================================================
+# HELPER: Obtener índice de columna por nombre (seguro)
+# =========================================================
+def get_col_index(ws, col_name):
+    """Devuelve el índice (1-based) de una columna por su nombre."""
+    headers = ws.row_values(1)
+    headers = [h.strip() for h in headers]
+    if col_name in headers:
+        return headers.index(col_name) + 1
+    return None
 
 # =========================================================
 # CARGA DE DATOS
@@ -125,7 +171,7 @@ def cargar_datos():
     df_reclamos = pd.DataFrame(ws_reclamos.get_all_records())
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
-    
+
     df_reclamos.columns = df_reclamos.columns.str.strip()
     df_clientes.columns = df_clientes.columns.str.strip()
     df_usuarios.columns = df_usuarios.columns.str.strip()
@@ -139,22 +185,25 @@ def cargar_datos():
     df_clientes_raw = df_clientes.copy()
 
     df_c = df_clientes.rename(columns={
-        'Nº Cliente': 'nro_cliente_cli', 
-        'Latitud': 'lat', 
+        'Nº Cliente': 'nro_cliente_cli',
+        'Latitud': 'lat',
         'Longitud': 'lon',
         'N° de Precinto': 'precinto_cliente'
     })
     df_c['nro_cliente_cli'] = df_c['nro_cliente_cli'].astype(str)
-    df_c['lat'] = pd.to_numeric(df_c['lat'].astype(str).str.replace(',', '.'), errors='coerce')
-    df_c['lon'] = pd.to_numeric(df_c['lon'].astype(str).str.replace(',', '.'), errors='coerce')
-    
-    df_c['precinto_cliente'] = df_c['precinto_cliente'].replace(['*', '', ' '], np.nan)
+
+    if 'lat' in df_c.columns:
+        df_c['lat'] = pd.to_numeric(df_c['lat'].astype(str).str.replace(',', '.'), errors='coerce')
+    if 'lon' in df_c.columns:
+        df_c['lon'] = pd.to_numeric(df_c['lon'].astype(str).str.replace(',', '.'), errors='coerce')
+
+    if 'precinto_cliente' in df_c.columns:
+        df_c['precinto_cliente'] = df_c['precinto_cliente'].replace(['*', '', ' '], np.nan)
 
     datos_cliente = df_c[['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente']].drop_duplicates(subset=['nro_cliente_cli'])
 
     df_r = df_reclamos.copy()
     df_r['Nº Cliente'] = df_r['Nº Cliente'].astype(str)
-    
     df_r = df_r.merge(datos_cliente, left_on='Nº Cliente', right_on='nro_cliente_cli', how='left')
 
     tz_argentina = timezone(timedelta(hours=-3))
@@ -170,36 +219,61 @@ def cargar_datos():
     return df_r, df_usuarios, df_clientes_raw, df_novedades
 
 # =========================================================
-# FUNCIÓN PARA DIBUJAR TARJETAS
+# FUNCIÓN PARA DIBUJAR TARJETAS (COMPACTA)
 # =========================================================
-def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_clientes=None, df_clientes_raw=None):
-    sheet_row_num = row.name + 2 
+def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
+                       ws_clientes=None, df_clientes_raw=None, modo="en_curso"):
+    """
+    Renderiza una tarjeta compacta de reclamo.
+    modo: "en_curso" → formulario de verificar
+          "pendiente" → formulario de asignar técnico
+    """
+    sheet_row_num = row.name + 2
     horas = row['Horas_Transcurridas']
 
+    # --- Badge ---
     badge = "🟢 Normal"
+    badge_color = "#4caf50"
     if pd.notna(horas):
-        if horas >= 48: badge = "🔴 +48 hs"
-        elif horas >= 24: badge = "🟡 +24 hs"
+        if horas >= 48:
+            badge = "🔴 +48hs"
+            badge_color = "#f44336"
+        elif horas >= 24:
+            badge = "🟡 +24hs"
+            badge_color = "#ff9800"
 
-    direccion = str(row.get('Dirección', 'Sin dirección')) if pd.notna(row.get('Dirección')) else 'Sin dirección'
-    telefono = str(row.get('Teléfono', 'Sin teléfono')) if pd.notna(row.get('Teléfono')) else 'Sin teléfono'
+    # --- Extraer campos ---
+    direccion = str(row.get('Dirección', '')) if pd.notna(row.get('Dirección')) else ''
+    telefono = str(row.get('Teléfono', '')) if pd.notna(row.get('Teléfono')) else ''
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
-    detalles = str(row.get('Detalles', '')) if pd.notna(row.get('Detalles')) and str(row.get('Detalles')) != '*' else ''
+    detalles = str(row.get('Detalles', '')) if pd.notna(row.get('Detalles')) and str(row.get('Detalles')) not in ['nan', '*', ''] else ''
     sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
     nombre_cliente = str(row.get('Nombre', ''))
     nro_cliente = str(row.get('Nº Cliente', ''))
-    
+    tecnico = str(row.get('Tecnico_Limpio', '')) if pd.notna(row.get('Tecnico_Limpio')) and str(row.get('Tecnico_Limpio')) not in ['nan', ''] else ''
+
     precinto = ''
-    if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '']:
+    if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '', ' ']:
         precinto = str(row.get('precinto_cliente'))
 
+    # --- Tiempo transcurrido (compacto) ---
     if pd.notna(horas):
-        if horas < 1: texto_tiempo = f"hace {int(horas * 60)} min"
-        elif horas < 24: texto_tiempo = f"hace {int(horas)} hs"
-        else: texto_tiempo = f"hace {int(horas / 24)} días"
-    else: texto_tiempo = "Fecha inválida"
+        if horas < 1:
+            texto_tiempo = f"{int(horas * 60)}min"
+        elif horas < 24:
+            texto_tiempo = f"{int(horas)}hs"
+        else:
+            texto_tiempo = f"{int(horas / 24)}d"
+    else:
+        texto_tiempo = "?"
 
+    # --- Ubicación ---
+    tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
+    maps_url = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}" if tiene_ubicacion else None
+
+    # --- Buscar fila del cliente en hoja ---
     cliente_fila = None
+    cliente_match = None
     if ws_clientes is not None and df_clientes_raw is not None:
         df_cl = df_clientes_raw.copy()
         df_cl['Nº Cliente'] = df_cl['Nº Cliente'].astype(str).str.strip()
@@ -207,119 +281,220 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False, ws_cliente
         if not cliente_match.empty:
             cliente_fila = cliente_match.index[0] + 2
 
+    # --- Obtener índices de columna dinámicamente ---
+    col_precinto_idx = get_col_index(ws_clientes, COL_CLIENTE_PRECINTO) if ws_clientes else None
+    col_lat_idx = get_col_index(ws_clientes, COL_CLIENTE_LAT) if ws_clientes else None
+    col_lon_idx = get_col_index(ws_clientes, COL_CLIENTE_LON) if ws_clientes else None
+    col_obs_idx = get_col_index(ws_clientes, COL_CLIENTE_OBS) if ws_clientes else None
+
     with st.container(border=True):
-        col1, col2 = st.columns([4, 1])
-        with col1: st.markdown(f"### 🎫 Nº {row['Nº Cliente']} - {nombre_cliente}")
-        with col2: st.markdown(f"**{badge}**")
+        # ── LÍNEA 1: Header con badge y tiempo ──
+        tecnico_html = f" <small style='color:#888;'>👷{tecnico}</small>" if (es_admin and tecnico) else ""
+        st.markdown(
+            f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+            f"<span style='font-size:1.05em;'><b>🎫 {nro_cliente}</b> — {nombre_cliente}{tecnico_html}</span>"
+            f"<span style='color:{badge_color};font-weight:bold;font-size:0.82em;'>{badge} · {texto_tiempo}</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
-        st.caption(texto_tiempo)
-        st.markdown(f"📍 **Sector:** {sector}")
-        st.markdown(f"**Dirección:** {direccion}")
-        st.markdown(f"📞 **Teléfono:** {telefono}")
-        st.markdown(f"⚙️ **Reclamo:** {tipo_reclamo}")
+        # ── LÍNEA 2: Sector · Reclamo ──
+        info_parts = []
+        if sector:
+            info_parts.append(f"📍{sector}")
+        if tipo_reclamo:
+            info_parts.append(f"⚙️{tipo_reclamo}")
+        if info_parts:
+            st.markdown(" · ".join(info_parts))
 
-        if detalles: st.info(f"📝 Detalles: {detalles}")
+        # ── LÍNEA 3: Dirección · Teléfono ──
+        contact_parts = []
+        if direccion:
+            contact_parts.append(f"🏠{direccion}")
+        if telefono:
+            contact_parts.append(f"📞{telefono}")
+        if contact_parts:
+            st.markdown(" · ".join(contact_parts))
 
-        if precinto: 
-            st.markdown(f"🔒 **Precinto:** {precinto}")
+        # ── LÍNEA 4: Precinto · Maps ──
+        loc_parts = []
+        if precinto:
+            loc_parts.append(f"🔒{precinto}")
         else:
-            st.caption("🔒 Precinto: No registrado")
+            loc_parts.append("🔒<i style='color:#888;'>Sin precinto</i>")
 
-        tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
-        if tiene_ubicacion:
-            maps_url = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
-            st.link_button("📍 Abrir ubicación en Google Maps", maps_url, use_container_width=True)
+        if tiene_ubicacion and maps_url:
+            loc_parts.append(f"<a href='{maps_url}' target='_blank' style='color:#00a8ff;text-decoration:none;'>📍Maps</a>")
         else:
-            st.caption("📍 Sin ubicación registrada")
+            loc_parts.append("<i style='color:#888;'>📍Sin geo</i>")
 
+        st.markdown(" · ".join(loc_parts), unsafe_allow_html=True)
+
+        # ── Detalles (si hay) ──
+        if detalles:
+            st.caption(f"📝 {detalles}")
+
+        # ── EDITAR PRECINTO/UBICACIÓN (siempre disponible para admin) ──
         if es_admin and cliente_fila is not None:
-            if not precinto or not tiene_ubicacion:
-                st.markdown("---")
-                st.markdown("**✏️ Completar datos del cliente**")
-                
-                if not precinto:
-                    with st.form(f"form_precinto_{nro_cliente}_{sheet_row_num}"):
-                        new_precinto = st.text_input("N° de Precinto", key=f"pint_{nro_cliente}_{sheet_row_num}")
-                        submit_p = st.form_submit_button("💾 Guardar Precinto")
+            with st.expander("✏️ Editar precinto / ubicación"):
+                col_edit1, col_edit2 = st.columns(2)
+
+                with col_edit1:
+                    current_p = precinto if precinto else ""
+                    with st.form(f"form_precinto_edit_{nro_cliente}_{sheet_row_num}"):
+                        new_precinto = st.text_input(
+                            "Precinto", value=current_p,
+                            key=f"pint_edit_{nro_cliente}_{sheet_row_num}"
+                        )
+                        submit_p = st.form_submit_button("💾 Guardar")
                         if submit_p:
-                            if not new_precinto.strip():
-                                st.error("❌ Ingresá un número de precinto.")
-                            else:
-                                try:
-                                    cell = gspread.utils.rowcol_to_a1(cliente_fila, 6)
+                            try:
+                                if col_precinto_idx:
+                                    cell = gspread.utils.rowcol_to_a1(cliente_fila, col_precinto_idx)
                                     ws_clientes.batch_update([{"range": cell, "values": [[new_precinto.strip()]]}])
                                     st.cache_data.clear()
-                                    st.success("✅ Precinto guardado.")
-                                    time.sleep(1)
+                                    st.success("✅ Precinto actualizado")
+                                    time.sleep(0.8)
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(f"❌ Error: {e}")
-                
-                if not tiene_ubicacion:
-                    with st.form(f"form_geo_{nro_cliente}_{sheet_row_num}"):
+                                else:
+                                    st.error("❌ Columna de precinto no encontrada en hoja")
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+
+                with col_edit2:
+                    # Valores actuales de lat/lon
+                    lat_val = ""
+                    lon_val = ""
+                    if tiene_ubicacion:
+                        lat_val = str(row.get('lat', ''))
+                        lon_val = str(row.get('lon', ''))
+                    elif cliente_match is not None and not cliente_match.empty:
                         lat_raw = str(cliente_match.iloc[0].get('Latitud', '')).strip()
                         lon_raw = str(cliente_match.iloc[0].get('Longitud', '')).strip()
-                        val_lat = lat_raw if lat_raw not in ("nan", "None", "") else "-26."
-                        val_lon = lon_raw if lon_raw not in ("nan", "None", "") else "-59."
-                        
-                        new_lat = st.text_input("Latitud", value=val_lat, key=f"lt_{nro_cliente}_{sheet_row_num}")
-                        new_lon = st.text_input("Longitud", value=val_lon, key=f"ln_{nro_cliente}_{sheet_row_num}")
-                        submit_g = st.form_submit_button("💾 Guardar Coordenadas")
+                        lat_val = lat_raw if lat_raw not in ("nan", "None", "") else ""
+                        lon_val = lon_raw if lon_raw not in ("nan", "None", "") else ""
+
+                    with st.form(f"form_geo_edit_{nro_cliente}_{sheet_row_num}"):
+                        new_lat = st.text_input(
+                            "Lat", value=lat_val,
+                            placeholder="-26.xxxxxx",
+                            key=f"lt_edit_{nro_cliente}_{sheet_row_num}"
+                        )
+                        new_lon = st.text_input(
+                            "Lon", value=lon_val,
+                            placeholder="-59.xxxxxx",
+                            key=f"ln_edit_{nro_cliente}_{sheet_row_num}"
+                        )
+                        submit_g = st.form_submit_button("💾 Guardar")
                         if submit_g:
                             if not new_lat.strip() or not new_lon.strip():
-                                st.error("❌ Completá ambos campos.")
+                                st.error("❌ Completá ambos campos")
                             else:
                                 try:
                                     float(new_lat.strip().replace(',', '.'))
                                     float(new_lon.strip().replace(',', '.'))
-                                    updates = [
-                                        {"range": gspread.utils.rowcol_to_a1(cliente_fila, 10), "values": [[new_lat.strip()]]},
-                                        {"range": gspread.utils.rowcol_to_a1(cliente_fila, 11), "values": [[new_lon.strip()]]}
-                                    ]
-                                    ws_clientes.batch_update(updates)
-                                    st.cache_data.clear()
-                                    st.success("✅ Coordenadas guardadas.")
-                                    time.sleep(1)
-                                    st.rerun()
+                                    if col_lat_idx and col_lon_idx:
+                                        updates = [
+                                            {"range": gspread.utils.rowcol_to_a1(cliente_fila, col_lat_idx), "values": [[new_lat.strip()]]},
+                                            {"range": gspread.utils.rowcol_to_a1(cliente_fila, col_lon_idx), "values": [[new_lon.strip()]]}
+                                        ]
+                                        ws_clientes.batch_update(updates)
+                                        st.cache_data.clear()
+                                        st.success("✅ Coordenadas actualizadas")
+                                        time.sleep(0.8)
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Columnas de lat/lon no encontradas en hoja")
                                 except ValueError:
-                                    st.error("❌ Las coordenadas deben ser numéricas (ej: -26.123456).")
+                                    st.error("❌ Coordenadas deben ser numéricas")
                                 except Exception as e:
-                                    st.error(f"❌ Error: {e}")
+                                    st.error(f"❌ {e}")
 
-        st.markdown("---")
-        with st.form(f"form_verify_{sheet_row_num}"):
-            obs = st.text_input(
-                "📝 Observación", 
-                placeholder="Ej: Caja con mala señal",
-                key=f"obs_{sheet_row_num}"
-            )
-            submit_verify = st.form_submit_button("✅ Verificar Trabajo", use_container_width=True)
-            
-            if submit_verify:
-                try:
-                    col_idx = df_reclamos.columns.get_loc('Estado') + 1
-                    ws_reclamos.update_cell(sheet_row_num, col_idx, "Verificado")
-                    
-                    if obs.strip() and cliente_fila is not None:
-                        tz_arg = timezone(timedelta(hours=-3))
-                        ahora = datetime.now(tz_arg)
-                        fecha_obs = f"{ahora.day}/{ahora.month}/{ahora.year}"
-                        obs_text = f"{fecha_obs}: {obs.strip().upper()}"
-                        
-                        current_val = ws_clientes.cell(cliente_fila, 9).value or ""
-                        if current_val and current_val.strip():
-                            new_val = current_val.strip() + "\n" + obs_text
-                        else:
-                            new_val = obs_text
-                        
-                        ws_clientes.update_cell(cliente_fila, 9, new_val)
-                    
-                    st.cache_data.clear()
-                    st.success("¡Reclamo verificado!")
-                    time.sleep(1)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error al actualizar: {e}")
+        # ── FORMULARIO: VERIFICAR (modo en_curso) ──
+        if modo == "en_curso":
+            with st.form(f"form_verify_{sheet_row_num}"):
+                obs = st.text_input(
+                    "📝 Obs", placeholder="Ej: Caja con mala señal",
+                    key=f"obs_{sheet_row_num}"
+                )
+                submit_verify = st.form_submit_button("✅ Verificar", use_container_width=True)
+
+                if submit_verify:
+                    try:
+                        col_idx = df_reclamos.columns.get_loc('Estado') + 1
+                        ws_reclamos.update_cell(sheet_row_num, col_idx, "Verificado")
+
+                        if obs.strip() and cliente_fila is not None and col_obs_idx:
+                            tz_arg = timezone(timedelta(hours=-3))
+                            ahora = datetime.now(tz_arg)
+                            fecha_obs = f"{ahora.day}/{ahora.month}/{ahora.year}"
+                            obs_text = f"{fecha_obs}: {obs.strip().upper()}"
+
+                            current_val = ws_clientes.cell(cliente_fila, col_obs_idx).value or ""
+                            new_val = (current_val.strip() + "\n" + obs_text) if current_val.strip() else obs_text
+                            ws_clientes.update_cell(cliente_fila, col_obs_idx, new_val)
+
+                        st.cache_data.clear()
+                        st.success("¡Verificado!")
+                        time.sleep(0.8)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        # ── FORMULARIO: ASIGNAR (modo pendiente) ──
+        elif modo == "pendiente" and es_admin:
+            with st.form(f"form_asignar_{nro_cliente}_{sheet_row_num}"):
+                tecnicos_sel = st.multiselect(
+                    "👷 Técnico(s)", TECNICOS_DISPONIBLES,
+                    key=f"ms_tec_{nro_cliente}_{sheet_row_num}"
+                )
+                submit_asignar = st.form_submit_button("🚀 Asignar → En Curso", use_container_width=True)
+
+                if submit_asignar:
+                    if not tecnicos_sel:
+                        st.error("❌ Seleccioná al menos un técnico.")
+                    else:
+                        try:
+                            col_estado = df_reclamos.columns.get_loc('Estado') + 1
+                            col_tecnico = df_reclamos.columns.get_loc('Técnico') + 1
+                            tecnicos_str = ", ".join(tecnicos_sel)
+
+                            updates = [
+                                {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_estado), "values": [["En curso"]]},
+                                {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_tecnico), "values": [[tecnicos_str]]}
+                            ]
+                            ws_reclamos.batch_update(updates)
+
+                            mensaje_whatsapp = generar_mensaje_asignacion(row, tecnicos_str)
+                            st.session_state["mensaje_para_copiar"] = mensaje_whatsapp
+
+                            st.cache_data.clear()
+                            st.success(f"✅ Asignado a **{tecnicos_str}**")
+                            time.sleep(0.5)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+
+# =========================================================
+# BUSCADOR DE RECLAMOS
+# =========================================================
+def filtrar_por_busqueda(df, query):
+    """Filtra DataFrame por texto de búsqueda en múltiples campos."""
+    if not query or not query.strip():
+        return df
+
+    q = query.strip().lower()
+    search_cols = ['Nº Cliente', 'Nombre', 'Dirección', 'Sector', 'Tipo de reclamo', 'Tecnico_Limpio']
+    search_cols = [c for c in search_cols if c in df.columns]
+
+    if not search_cols:
+        return df
+
+    mask = pd.Series(False, index=df.index)
+    for col in search_cols:
+        mask = mask | df[col].astype(str).str.lower().str.contains(q, na=False)
+
+    return df[mask]
 
 # =========================================================
 # GENERADOR DE PDF (Original - Resumen por Técnico)
@@ -337,7 +512,7 @@ class PDFReporte(FPDF):
 
 def generar_pdf(df, fecha_str):
     pdf = PDFReporte('P', 'mm', 'A4')
-    pdf.set_auto_page_break(auto=False) 
+    pdf.set_auto_page_break(auto=False)
     pdf.add_page()
 
     col_width = 90
@@ -346,7 +521,7 @@ def generar_pdf(df, fecha_str):
     bottom_limit = 275
     gap = 10
     cols_x = [margin_x, margin_x + col_width + gap]
-    
+
     current_col = 0
     current_x = cols_x[current_col]
     current_y = margin_y
@@ -357,10 +532,8 @@ def generar_pdf(df, fecha_str):
     for tecnico in tecnicos:
         df_tec = df[df['Tecnico_Grupo'] == tecnico]
         count_tec = len(df_tec)
-        
         count_ok = len(df_tec[df_tec['Estado_Limpio'] == 'Verificado'])
         count_pendientes = count_tec - count_ok
-        
         block_height = 7 + (count_tec * 5)
 
         if current_y + block_height > bottom_limit:
@@ -373,7 +546,7 @@ def generar_pdf(df, fecha_str):
 
         tecnico_safe = tecnico.encode('latin-1', 'replace').decode('latin-1')
         tecnico_display = tecnico_safe.title()
-        
+
         pdf.set_xy(current_x, current_y)
         pdf.set_font('Helvetica', 'B', 9)
         pdf.cell(col_width, 5, f"Técnico: {tecnico_display} ({count_tec}) ({count_ok} OK - {count_pendientes} Pendientes)", 0, 1)
@@ -394,32 +567,31 @@ def generar_pdf(df, fecha_str):
             tipo_safe = str(row.get('Tipo de reclamo', '')).encode('latin-1', 'replace').decode('latin-1')
 
             pdf.set_xy(current_x, current_y)
-            
             pdf.set_font('Helvetica', '', 8)
             parte1 = f"{nro_cliente_safe} - "
             w1 = pdf.get_string_width(parte1)
             pdf.cell(w1, 4, parte1, 0, 0)
-            
+
             pdf.set_font('Helvetica', 'B', 8)
             w2 = pdf.get_string_width(status)
             pdf.cell(w2, 4, status, 0, 0)
-            
+
             pdf.set_font('Helvetica', '', 8)
             parte3 = f" - {tipo_safe}"
             w3 = col_width - w1 - w2
-            
+
             if pdf.get_string_width(parte3) > w3:
                 while pdf.get_string_width(parte3 + "..") > w3 and len(parte3) > 4:
                     parte3 = parte3[:-1]
                 parte3 = parte3.rstrip(' -.') + ".."
-            
+
             pdf.cell(w3, 4, parte3, 0, 1)
             current_y += 5
 
     return bytes(pdf.output())
 
 # =========================================================
-# GENERADOR DE PDF VERIFICADOS DETALLADO (CORREGIDO - A4 Vertical)
+# GENERADOR DE PDF VERIFICADOS DETALLADO
 # =========================================================
 class PDFVerificados(FPDF):
     def header(self):
@@ -432,45 +604,34 @@ class PDFVerificados(FPDF):
         self.set_font('Helvetica', 'I', 8)
         self.cell(0, 10, f'Pagina {self.page_no()}/{{nb}}', 0, 0, 'C')
 
-
 def generar_pdf_verificados_detallado(df_verificados):
-    """
-    Genera un PDF A4 VERTICAL con tabla lineal de verificados.
-    Control manual de salto de página para no cortar filas.
-    """
     pdf = PDFVerificados('P', 'mm', 'A4')
-    pdf.set_auto_page_break(auto=False)  # Control manual absoluto
-    pdf.alias_nb_pages()  # Registra {nb} para total de páginas
+    pdf.set_auto_page_break(auto=False)
+    pdf.alias_nb_pages()
     pdf.add_page()
 
-    # === DIMENSIONES A4 VERTICAL ===
     margin_x = 10
     page_width = 210
-    usable_width = page_width - (margin_x * 2)  # 190mm
+    usable_width = page_width - (margin_x * 2)
 
-    # Alturas de referencia
-    content_start_y = 25    # Donde empieza el contenido (después del header)
-    footer_zone_y = 282     # Donde empieza la zona del footer (297 - 15)
-    row_height = 6          # Altura de cada fila de datos
-    header_height = 7       # Altura del encabezado de tabla
+    content_start_y = 25
+    footer_zone_y = 282
+    row_height = 6
+    header_height = 7
 
-    # === ANCHOS DE COLUMNA (total = 190mm) ===
-    col_cliente = 22        # Nº Cliente
-    col_nombre = 48         # Nombre
-    col_tipo = 55           # Tipo de reclamo
-    col_precinto = 30       # Precinto
-    col_tecnico = 35        # Técnico
-    # 22 + 48 + 55 + 30 + 35 = 190 ✓
+    col_cliente = 22
+    col_nombre = 48
+    col_tipo = 55
+    col_precinto = 30
+    col_tecnico = 35
 
     col_widths = [col_cliente, col_nombre, col_tipo, col_precinto, col_tecnico]
     col_headers = ['Nº Cliente', 'Nombre', 'Tipo de Reclamo', 'Precinto', 'Tecnico']
 
-    # Calcular posición X de cada columna
     col_x = [margin_x]
     for w in col_widths[:-1]:
         col_x.append(col_x[-1] + w)
 
-    # === FUNCIÓN INTERNA: Dibujar encabezado de tabla ===
     def dibujar_encabezado_tabla(y_pos):
         pdf.set_font('Helvetica', 'B', 7.5)
         pdf.set_fill_color(50, 50, 50)
@@ -482,31 +643,23 @@ def generar_pdf_verificados_detallado(df_verificados):
         pdf.set_text_color(0, 0, 0)
         return y_pos + header_height
 
-    # === BARRA DE TITULO CON TOTAL ===
     current_y = content_start_y
     pdf.set_xy(margin_x, current_y)
     pdf.set_font('Helvetica', 'B', 9)
     pdf.set_fill_color(220, 220, 220)
     pdf.cell(usable_width, 6, f'Total de trabajos verificados: {len(df_verificados)}', 0, 1, 'L', fill=True)
     current_y += 8
-
-    # === ENCABEZADO DE TABLA (primera página) ===
     current_y = dibujar_encabezado_tabla(current_y)
 
-    # === FILAS DE DATOS ===
     pdf.set_font('Helvetica', '', 7)
     fila_num = 0
 
     for idx, row in df_verificados.iterrows():
-        # --------------------------------------------------
-        # CONTROL DE SALTO DE PÁGINA: ¿La fila ENTERA cabe?
-        # --------------------------------------------------
         if current_y + row_height > footer_zone_y:
-            pdf.add_page()                          # Nueva página (header se dibuja solo)
-            current_y = content_start_y             # Reset Y
-            current_y = dibujar_encabezado_tabla(current_y)  # Re-dibujar encabezado
+            pdf.add_page()
+            current_y = content_start_y
+            current_y = dibujar_encabezado_tabla(current_y)
 
-        # --- Extraer datos ---
         nro_cliente = str(row.get('Nº Cliente', '')).encode('latin-1', 'replace').decode('latin-1')
         nombre = str(row.get('Nombre', '')).encode('latin-1', 'replace').decode('latin-1')
         tipo_reclamo = str(row.get('Tipo de reclamo', '')).encode('latin-1', 'replace').decode('latin-1')
@@ -525,29 +678,23 @@ def generar_pdf_verificados_detallado(df_verificados):
 
         datos = [nro_cliente, nombre, tipo_reclamo, precinto, tecnico]
 
-        # --- Color de fondo alternado ---
         if fila_num % 2 == 0:
             pdf.set_fill_color(255, 255, 255)
         else:
             pdf.set_fill_color(242, 242, 242)
 
-        # --- Dibujar cada celda con truncado ---
         for i, dato in enumerate(datos):
-            ancho_celda = col_widths[i] - 2  # 1mm padding por lado
-
-            # Truncar si excede el ancho disponible
+            ancho_celda = col_widths[i] - 2
             if pdf.get_string_width(dato) > ancho_celda:
                 while pdf.get_string_width(dato + "..") > ancho_celda and len(dato) > 3:
                     dato = dato[:-1]
                 dato = dato.rstrip(' .-,') + ".."
-
             pdf.set_xy(col_x[i] + 1, current_y)
             pdf.cell(col_widths[i] - 2, row_height, dato, 1, 0, 'L', fill=True)
 
         current_y += row_height
         fila_num += 1
 
-    # === PIE DEL DOCUMENTO ===
     if current_y + 10 > footer_zone_y:
         pdf.add_page()
         current_y = content_start_y
@@ -565,7 +712,7 @@ def generar_pdf_verificados_detallado(df_verificados):
     return bytes(pdf.output())
 
 # =========================================================
-# GENERADOR DE MENSAJE WHATSAPP (Copia y Pega)
+# GENERADOR DE MENSAJE WHATSAPP
 # =========================================================
 def generar_mensaje_asignacion(row, tecnicos_asignados):
     cliente = str(row.get('Nombre', 'Sin Nombre'))
@@ -575,45 +722,44 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
     detalles = str(row.get('Detalles', ''))
     sector = str(row.get('Sector', ''))
-    
-    if detalles == '*' or detalles == 'nan': detalles = ""
-    
+
+    if detalles == '*' or detalles == 'nan':
+        detalles = ""
+
     precinto = ''
     if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '']:
         precinto = str(row.get('precinto_cliente'))
-    
-    linea_separadora = "------------------------------------------------"
-    
+
+    sep = "------------------------------------------------"
+
     msg = f"🔧 *NUEVA ASIGNACIÓN DE TRABAJO* 🔧\n"
-    msg += linea_separadora + "\n"
+    msg += sep + "\n"
     msg += f"👷 *TÉCNICO(S):* {tecnicos_asignados}\n"
     msg += f"👤 *CLIENTE:* {cliente} (Nº {nro_cliente})\n"
-    
-    if sector: msg += f"📍 *SECTOR:* {sector}\n"
-    
+    if sector:
+        msg += f"📍 *SECTOR:* {sector}\n"
     msg += f"🏠 *DIRECCIÓN:* {direccion}\n"
-    if telefono and telefono != 'Sin teléfono': 
+    if telefono and telefono != 'Sin teléfono':
         msg += f"📞 *TEL:* {telefono}\n"
-        
     if precinto:
         msg += f"🔒 *PRECINTO:* {precinto}\n"
     else:
         msg += f"🔒 *PRECINTO:* No cuenta con número de precinto\n"
-        
-    msg += linea_separadora + "\n"
+    msg += sep + "\n"
     msg += f"⚙️ *RECLAMO:* {tipo_reclamo}\n"
-    if detalles: msg += f"📝 *DETALLE:* {detalles}\n"
-    
+    if detalles:
+        msg += f"📝 *DETALLE:* {detalles}\n"
+
     tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
     if tiene_ubicacion:
         maps_link = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
-        msg += linea_separadora + "\n"
+        msg += sep + "\n"
         msg += f"🗺️ *UBICACIÓN:* {maps_link}\n"
         msg += "(Click en el link para abrir Google Maps)"
     else:
-        msg += linea_separadora + "\n"
+        msg += sep + "\n"
         msg += "⚠️ *Sin georeferenciación exacta*"
-        
+
     return msg
 
 # =========================================================
@@ -631,9 +777,9 @@ def login_screen():
             try:
                 ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
                 df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
-                
+
                 user_row = df_usuarios[(df_usuarios['username'] == username) & (df_usuarios['password'] == password)]
-                
+
                 if not user_row.empty:
                     rol = str(user_row.iloc[0]['rol']).strip()
                     rol_lower = rol.lower()
@@ -643,9 +789,8 @@ def login_screen():
                     st.session_state["user_name"] = user_row.iloc[0]['nombre']
                     st.session_state["rol"] = rol
                     st.session_state["es_admin"] = es_admin
-                    
+
                     save_cookie("fusion_user", username, days=30)
-                    
                     st.rerun()
                 else:
                     st.error("Usuario o contraseña incorrectos.")
@@ -659,15 +804,16 @@ def main_app():
     es_admin = st.session_state.get('es_admin', False)
     rol = st.session_state.rol
 
-    col1, col2, col3 = st.columns([3, 1, 1])
+    # --- Header compacto ---
+    col1, col2, col3 = st.columns([4, 1, 1])
     with col1:
         st.markdown(f"### 👷 {st.session_state.user_name} ({'Admin' if es_admin else 'Técnico'})")
     with col2:
-        if st.button("🔄"):
+        if st.button("🔄", help="Refrescar datos"):
             st.cache_data.clear()
             st.rerun()
     with col3:
-        if st.button("🚪 Salir"):
+        if st.button("🚪", help="Salir"):
             delete_cookie("fusion_user")
             st.session_state.authenticated = False
             st.rerun()
@@ -687,39 +833,35 @@ def main_app():
         fecha_nov = str(ultima.get('Fecha', ''))
         mensaje_nov = str(ultima.get('Mensaje', ''))
         if mensaje_nov and mensaje_nov != 'nan':
-            st.info(f"📢 **Novedad ({fecha_nov}):** {mensaje_nov}")
+            st.info(f"📢 **({fecha_nov}):** {mensaje_nov}")
 
     # =====================================================
     # VISTA ADMIN
     # =====================================================
     if es_admin:
         st.markdown("### 👑 Panel de Administración")
-        
+
         mask_en_curso = df_reclamos['Estado_Limpio'] == "En curso"
         mask_verificados = df_reclamos['Estado_Limpio'] == "Verificado"
         mask_pendientes = df_reclamos['Estado_Limpio'] == "Pendiente"
         mask_criticos = (df_reclamos['Horas_Transcurridas'] >= 48) & (df_reclamos['Estado_Limpio'].isin(["En curso", "Pendiente"]))
-        
+
         count_curso = int(mask_en_curso.sum())
         count_verif = int(mask_verificados.sum())
         count_pend = int(mask_pendientes.sum())
         count_crit = int(mask_criticos.sum())
-        
+
         col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-        with col_s1:
-            st.metric("🟢 En Curso", count_curso)
-        with col_s2:
-            st.metric("✅ Verificados", count_verif)
-        with col_s3:
-            st.metric("⏸️ Pendientes", count_pend)
-        with col_s4:
-            st.metric("🔴 +48 hs", count_crit)
-        
+        with col_s1: st.metric("🟢 En Curso", count_curso)
+        with col_s2: st.metric("✅ Verificados", count_verif)
+        with col_s3: st.metric("⏸️ Pendientes", count_pend)
+        with col_s4: st.metric("🔴 +48 hs", count_crit)
+
         # --- HERRAMIENTAS ADMIN ---
         with st.container(border=True):
             st.markdown("**⚙️ Herramientas de Gestión**")
             col_p1, col_p2, col_p3 = st.columns(3)
-            
+
             with col_p1:
                 if st.button("📄 PDF Resumen", use_container_width=True):
                     with st.spinner("Generando PDF..."):
@@ -727,7 +869,6 @@ def main_app():
                             estados_pdf = ["En curso", "Verificado"]
                             mask_pdf = df_reclamos['Estado_Limpio'].isin(estados_pdf)
                             df_activos_pdf = df_reclamos[mask_pdf & mask_tecnico_asignado].copy()
-                            
                             pdf_bytes = generar_pdf(df_activos_pdf, datetime.now().strftime("%d/%m/%Y"))
                             st.download_button(
                                 label="⬇️ Descargar PDF Resumen",
@@ -738,7 +879,7 @@ def main_app():
                             )
                         except Exception as e:
                             st.error(f"Error al generar PDF: {e}")
-            
+
             with col_p2:
                 st.markdown("🔒 Verificados → Resuelto")
                 confirmar_cierre = st.checkbox("Confirmar cierre", key="chk_cierre")
@@ -761,7 +902,7 @@ def main_app():
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error en cierre masivo: {e}")
-            
+
             with col_p3:
                 st.markdown("⏸️ En Curso → Pendiente")
                 confirmar_pendiente = st.checkbox("Confirmar pase", key="chk_pendiente")
@@ -789,21 +930,19 @@ def main_app():
         with st.container(border=True):
             st.markdown("**📋 Exportación Detallada**")
             col_d1, col_d2 = st.columns(2)
-            
+
             with col_d1:
                 if st.button("✅ PDF Verificados Detallado", use_container_width=True, type="primary"):
                     with st.spinner("Generando PDF detallado..."):
                         try:
                             df_verif_pdf = df_reclamos[mask_verificados].copy()
-                            
                             if df_verif_pdf.empty:
                                 st.warning("No hay reclamos verificados para exportar.")
                             else:
                                 df_verif_pdf = df_verif_pdf.sort_values(
-                                    by=['Tecnico_Limpio', 'Nº Cliente'], 
+                                    by=['Tecnico_Limpio', 'Nº Cliente'],
                                     ascending=[True, True]
                                 )
-                                
                                 pdf_bytes = generar_pdf_verificados_detallado(df_verif_pdf)
                                 st.download_button(
                                     label="⬇️ Descargar PDF Verificados",
@@ -814,7 +953,7 @@ def main_app():
                                 )
                         except Exception as e:
                             st.error(f"Error al generar PDF: {e}")
-            
+
             with col_d2:
                 st.caption("""
                 **Este PDF incluye:**
@@ -827,7 +966,7 @@ def main_app():
         # --- NOVEDADES ADMIN ---
         with st.container(border=True):
             st.markdown("**📢 Novedades del Día**")
-            
+
             if not df_novedades.empty:
                 ultimas = df_novedades.tail(3).iloc[::-1]
                 for _, nrow in ultimas.iterrows():
@@ -835,10 +974,10 @@ def main_app():
                     m_nov = str(nrow.get('Mensaje', ''))
                     if m_nov and m_nov != 'nan':
                         st.markdown(f"📌 **{f_nov}:** {m_nov}")
-            
+
             with st.form("form_novedad"):
                 nueva_novedad = st.text_input(
-                    "Escribir nueva novedad", 
+                    "Escribir nueva novedad",
                     placeholder="Ej: Hoy se trabaja hasta las 18",
                     key="nueva_nov_input"
                 )
@@ -858,46 +997,55 @@ def main_app():
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error: {e}")
-        
+
         st.divider()
 
         # =====================================================
-        # VISUALIZADOR DE MENSAJE PARA WHATSAPP
+        # MENSAJE WHATSAPP (si hay pendiente de copiar)
         # =====================================================
         if "mensaje_para_copiar" in st.session_state and st.session_state["mensaje_para_copiar"]:
-            with st.expander("📱 Mensaje generado para WhatsApp (Click para abrir)", expanded=True):
+            with st.expander("📱 Mensaje para WhatsApp (Click para abrir)", expanded=True):
                 st.info("📋 Copiá el siguiente texto y enviáselo al técnico:")
-                
                 st.text_area(
-                    "Texto del mensaje", 
-                    value=st.session_state["mensaje_para_copiar"], 
-                    height=250, 
+                    "Texto del mensaje",
+                    value=st.session_state["mensaje_para_copiar"],
+                    height=250,
                     key="msg_display"
                 )
-                
                 col_c1, col_c2 = st.columns(2)
                 with col_c1:
                     if st.button("✅ Ya lo envié (Limpiar)", use_container_width=True):
                         del st.session_state["mensaje_para_copiar"]
                         st.rerun()
                 with col_c2:
-                    st.markdown("<small><i>Tip: Selecciona el texto -> Ctrl+C</i></small>", unsafe_allow_html=True)
-            
+                    st.markdown("<small><i>Tip: Selecciona el texto → Ctrl+C</i></small>", unsafe_allow_html=True)
             st.divider()
 
         # --- CONTADORES POR TÉCNICO ---
         mask_verificados_tec = (df_reclamos['Estado_Limpio'] == "Verificado") & mask_tecnico_asignado
         verificados_por_tecnico = df_reclamos[mask_verificados_tec].groupby('Tecnico_Limpio').size().to_dict()
 
-        # --- LISTADO EN CURSO ---
-        estados_display = ["En curso"]
-        mask_estado_display = df_reclamos['Estado_Limpio'].isin(estados_display)
+        # =====================================================
+        # 🔍 BUSCADOR + FILTRO DE TÉCNICO
+        # =====================================================
+        mask_estado_display = df_reclamos['Estado_Limpio'] == "En curso"
         df_activos_display = df_reclamos[mask_estado_display & mask_tecnico_asignado].copy()
 
         if not df_activos_display.empty:
-            tecnicos_unicos = sorted(df_activos_display['Tecnico_Limpio'].unique())
+            # Buscador
+            search_query = st.text_input(
+                "🔍 Buscar reclamo en curso",
+                placeholder="Nº cliente, nombre, dirección, sector, técnico...",
+                key="search_reclamos_admin"
+            )
+
+            # Aplicar búsqueda
+            df_activos_display = filtrar_por_busqueda(df_activos_display, search_query)
+
+            # Filtro por técnico
+            tecnicos_unicos = sorted(df_activos_display['Tecnico_Limpio'].dropna().unique()) if not df_activos_display.empty else []
             tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
-            
+
             if tecnico_seleccionado == "Todos":
                 df_filtrado = df_activos_display.copy()
             else:
@@ -905,164 +1053,101 @@ def main_app():
 
             df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
 
+            # Mostrar contadores
             if tecnico_seleccionado == "Todos":
+                tecnicos_en_vista = sorted(df_filtrado['Tecnico_Limpio'].dropna().unique())
                 total_en_curso = len(df_filtrado)
-                total_verificados = sum(verificados_por_tecnico.get(t, 0) for t in tecnicos_unicos)
+                total_verificados = sum(verificados_por_tecnico.get(t, 0) for t in tecnicos_en_vista)
                 total_general = total_en_curso + total_verificados
-                st.markdown(f"**Total: {total_general} (En Curso {total_en_curso} + Verificados {total_verificados})**")
-                
+                st.markdown(f"**Total: {total_general}** (En Curso {total_en_curso} + Verificados {total_verificados})")
+
+                if search_query.strip():
+                    st.caption(f"Mostrando {len(df_filtrado)} resultado(s) para \"{search_query.strip()}\"")
+
                 for tecnico, grupo in df_filtrado.groupby('Tecnico_Limpio'):
                     en_curso = len(grupo)
                     verificados = verificados_por_tecnico.get(tecnico, 0)
                     total = en_curso + verificados
-                    with st.expander(f"👷 {tecnico} {total} (En Curso {en_curso} + Verificados {verificados})"):
+                    with st.expander(f"👷 {tecnico} — {total} (Curso {en_curso} + OK {verificados})"):
                         for idx, row in grupo.iterrows():
                             renderizar_tarjeta(
-                                row, df_reclamos, ws_reclamos, 
-                                es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
+                                row, df_reclamos, ws_reclamos,
+                                es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw,
+                                modo="en_curso"
                             )
             else:
                 en_curso = len(df_filtrado)
                 verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
                 total = en_curso + verificados
-                st.markdown(f"**{tecnico_seleccionado}: {total} (En Curso {en_curso} + Verificados {verificados})**")
-                
+                st.markdown(f"**{tecnico_seleccionado}: {total}** (Curso {en_curso} + OK {verificados})")
+
+                if search_query.strip():
+                    st.caption(f"Mostrando {len(df_filtrado)} resultado(s) para \"{search_query.strip()}\"")
+
                 for idx, row in df_filtrado.iterrows():
                     renderizar_tarjeta(
-                        row, df_reclamos, ws_reclamos, 
-                        es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
+                        row, df_reclamos, ws_reclamos,
+                        es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw,
+                        modo="en_curso"
                     )
         else:
             st.info("ℹ️ No hay reclamos En curso con técnico asignado.")
 
-        # SECCIÓN PENDIENTES
-        mask_pend = df_reclamos['Estado_Limpio'] == "Pendiente"
-        df_pendientes = df_reclamos[mask_pend].copy()
-
+        # =====================================================
+        # SECCIÓN PENDIENTES (reutiliza renderizar_tarjeta)
+        # =====================================================
         st.divider()
+        df_pendientes = df_reclamos[df_reclamos['Estado_Limpio'] == "Pendiente"].copy()
 
         if not df_pendientes.empty:
             df_pendientes = df_pendientes.sort_values(by='Horas_Transcurridas', ascending=False)
-            
+
             with st.expander(f"📋 Reclamos Pendientes ({len(df_pendientes)})"):
-                for idx, row in df_pendientes.iterrows():
-                    sheet_row_num = row.name + 2
-                    nro_cliente = str(row.get('Nº Cliente', ''))
-                    nombre_cliente = str(row.get('Nombre', ''))
-                    tipo_reclamo = str(row.get('Tipo de reclamo', ''))
-                    sector = str(row.get('Sector', '')) if pd.notna(row.get('Sector')) else ''
-                    direccion = str(row.get('Dirección', 'Sin dirección')) if pd.notna(row.get('Dirección')) else 'Sin dirección'
-                    telefono = str(row.get('Teléfono', 'Sin teléfono')) if pd.notna(row.get('Teléfono')) else 'Sin teléfono'
-                    detalles_pen = str(row.get('Detalles', '')) if pd.notna(row.get('Detalles')) and str(row.get('Detalles')) != '*' else ''
-                    horas_pen = row['Horas_Transcurridas']
+                # Buscador para pendientes
+                search_pend = st.text_input(
+                    "🔍 Buscar pendiente",
+                    placeholder="Nº cliente, nombre, dirección...",
+                    key="search_pendientes"
+                )
+                df_pendientes_filtrado = filtrar_por_busqueda(df_pendientes, search_pend)
 
-                    badge_pen = ""
-                    if pd.notna(horas_pen):
-                        if horas_pen >= 48: badge_pen = "🔴 +48 hs"
-                        elif horas_pen >= 24: badge_pen = "🟡 +24 hs"
-                        else: badge_pen = "🟢 Normal"
-                    
-                    if pd.notna(horas_pen):
-                        if horas_pen < 1: tiempo_pen = f"hace {int(horas_pen * 60)} min"
-                        elif horas_pen < 24: tiempo_pen = f"hace {int(horas_pen)} hs"
-                        else: tiempo_pen = f"hace {int(horas_pen / 24)} días"
-                    else: tiempo_pen = "Fecha inválida"
-
-                    tiene_ubicacion_pen = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
-
-                    with st.container(border=True):
-                        col_h1, col_h2 = st.columns([4, 1])
-                        with col_h1:
-                            st.markdown(f"**🎫 Nº {nro_cliente} - {nombre_cliente}**")
-                        with col_h2:
-                            if badge_pen: st.markdown(f"**{badge_pen}**")
-                        
-                        st.caption(f"⏸️ Pendiente · {tiempo_pen}")
-                        st.markdown(f"📍 **Sector:** {sector}")
-                        st.markdown(f"**Dirección:** {direccion}")
-                        st.markdown(f"📞 **Teléfono:** {telefono}")
-                        st.markdown(f"⚙️ **Reclamo:** {tipo_reclamo}")
-                        
-                        if detalles_pen: st.info(f"📝 Detalles: {detalles_pen}")
-                        
-                        if tiene_ubicacion_pen:
-                            maps_url_pen = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
-                            st.link_button("📍 Abrir ubicación en Google Maps", maps_url_pen, use_container_width=True)
-
-                        with st.form(f"form_asignar_{nro_cliente}_{sheet_row_num}"):
-                            tecnicos_sel = st.multiselect(
-                                "👷 Asignar técnico(s)",
-                                TECNICOS_DISPONIBLES,
-                                key=f"ms_tec_{nro_cliente}_{sheet_row_num}"
-                            )
-                            submit_asignar = st.form_submit_button("🚀 Asignar y poner En Curso", use_container_width=True)
-                            
-                            if submit_asignar:
-                                if not tecnicos_sel:
-                                    st.error("❌ Seleccioná al menos un técnico.")
-                                else:
-                                    try:
-                                        col_estado = df_reclamos.columns.get_loc('Estado') + 1
-                                        col_tecnico = df_reclamos.columns.get_loc('Técnico') + 1
-                                        tecnicos_str = ", ".join(tecnicos_sel)
-                                        
-                                        updates = [
-                                            {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_estado), "values": [["En curso"]]},
-                                            {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_tecnico), "values": [[tecnicos_str]]}
-                                        ]
-                                        ws_reclamos.batch_update(updates)
-                                        
-                                        mensaje_whatsapp = generar_mensaje_asignacion(row, tecnicos_str)
-                                        
-                                        st.session_state["mensaje_para_copiar"] = mensaje_whatsapp
-                                        
-                                        st.cache_data.clear()
-                                        st.success(f"✅ Asignado a **{tecnicos_str}** y puesto En Curso.")
-                                        time.sleep(0.5)
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"❌ Error al asignar: {e}")
+                for idx, row in df_pendientes_filtrado.iterrows():
+                    renderizar_tarjeta(
+                        row, df_reclamos, ws_reclamos,
+                        es_admin=True, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw,
+                        modo="pendiente"
+                    )
         else:
             st.success("🎉 No hay reclamos Pendientes.")
 
-        # =====================================================================
-        # SECCIÓN VERIFICADOS (LISTA COMPACTA)
-        # =====================================================================
+        # =====================================================
+        # SECCIÓN VERIFICADOS (lista compacta)
+        # =====================================================
         st.divider()
         df_verificados_lista = df_reclamos[df_reclamos['Estado_Limpio'] == "Verificado"].copy()
 
         if not df_verificados_lista.empty:
-            with st.expander(f"✅ Reclamos Verificados - Control ({len(df_verificados_lista)})"):
+            with st.expander(f"✅ Verificados - Control ({len(df_verificados_lista)})"):
                 cols_disponibles = []
                 if 'Nº Cliente' in df_verificados_lista.columns:
                     cols_disponibles.append('Nº Cliente')
                 if 'Nombre' in df_verificados_lista.columns:
                     cols_disponibles.append('Nombre')
-                
                 if 'precinto_cliente' in df_verificados_lista.columns:
                     cols_disponibles.append('precinto_cliente')
-                
                 cols_disponibles.append('Tecnico_Limpio')
-                
+
                 df_verif_compact = df_verificados_lista[cols_disponibles].copy()
-                
-                nuevos_nombres = {
+                df_verif_compact.rename(columns={
                     'Tecnico_Limpio': 'Técnico',
                     'precinto_cliente': 'Precinto'
-                }
-                df_verif_compact.rename(columns=nuevos_nombres, inplace=True)
-                
+                }, inplace=True)
                 df_verif_compact['Precinto'] = df_verif_compact['Precinto'].fillna('Sin precinto')
                 df_verif_compact['Técnico'] = df_verif_compact['Técnico'].fillna('Sin asignar')
-                
-                st.dataframe(
-                    df_verif_compact, 
-                    use_container_width=True, 
-                    hide_index=True
-                )
+
+                st.dataframe(df_verif_compact, use_container_width=True, hide_index=True)
         else:
             st.info("ℹ️ No hay reclamos verificados aún.")
-
 
     # =====================================================
     # VISTA TÉCNICO
@@ -1072,18 +1157,27 @@ def main_app():
         mask_estado_tec = df_reclamos['Estado_Limpio'].isin(estados_tec)
         mask_tecnico = df_reclamos['Técnico'].str.contains(rol, case=False, na=False)
         mis_reclamos = df_reclamos[mask_tecnico & mask_estado_tec].copy()
-
         mis_reclamos = mis_reclamos.sort_values(by='Horas_Transcurridas', ascending=False)
+
         st.markdown(f"### 📋 Reclamos en curso: {len(mis_reclamos)}")
 
         if mis_reclamos.empty:
             st.success("🎉 No tenés reclamos pendientes.")
             return
 
+        # Buscador para técnicos también
+        search_tec = st.text_input(
+            "🔍 Buscar en mis reclamos",
+            placeholder="Nº cliente, nombre, dirección...",
+            key="search_tecnico"
+        )
+        mis_reclamos = filtrar_por_busqueda(mis_reclamos, search_tec)
+
         for idx, row in mis_reclamos.iterrows():
             renderizar_tarjeta(
-                row, df_reclamos, ws_reclamos, 
-                es_admin=False, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw
+                row, df_reclamos, ws_reclamos,
+                es_admin=False, ws_clientes=ws_clientes, df_clientes_raw=df_clientes_raw,
+                modo="en_curso"
             )
 
 # =========================================================
@@ -1093,29 +1187,30 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
+    # Intentar auto-login con cookie
     saved_user = load_cookie("fusion_user")
     if saved_user:
         try:
             ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
             df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
             df_usuarios.columns = df_usuarios.columns.str.strip()
-            user_row = df_usuarios[(df_usuarios['username'] == saved_user)]
-            
+
+            user_row = df_usuarios[df_usuarios['username'] == saved_user]
+
             if not user_row.empty:
                 rol = str(user_row.iloc[0]['rol']).strip()
                 rol_lower = rol.lower()
                 es_admin = rol_lower in ['admin', 'oficina', 'supervisor']
-                
+
                 st.session_state["authenticated"] = True
                 st.session_state["user_name"] = user_row.iloc[0]['nombre']
                 st.session_state["rol"] = rol
                 st.session_state["es_admin"] = es_admin
-            else:
-                delete_cookie("fusion_user")
+                st.rerun()
         except:
             pass
 
-if st.session_state.authenticated:
-    main_app()
-else:
+    # Si no hay cookie válida, mostrar login
     login_screen()
+else:
+    main_app()
