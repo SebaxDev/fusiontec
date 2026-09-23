@@ -1,0 +1,9 @@
+streamlit
+pandas
+gspread
+google-auth
+folium
+streamlit-folium
+geopy
+fpdf2
+numpy
