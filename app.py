@@ -213,10 +213,13 @@ def cargar_datos():
     if 'precinto_cliente' in df_c.columns:
         df_c['precinto_cliente'] = df_c['precinto_cliente'].replace(['*', '', ' '], np.nan)
 
-    # Agregamos la columna Plan dinámicamente si existe en la hoja Clientes
+    # Buscar agresivamente la columna de Plan (ignora mayúsculas o espacios extra)
+    plan_col_name = next((c for c in df_c.columns if 'plan' in str(c).lower()), None)
+    
     cols_cliente = ['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente']
-    if 'Plan' in df_c.columns:
-        cols_cliente.append('Plan')
+    if plan_col_name:
+        df_c['Plan_Limpio'] = df_c[plan_col_name].astype(str).replace(['nan', 'None', '', ' ', '*'], np.nan)
+        cols_cliente.append('Plan_Limpio')
 
     datos_cliente = df_c[cols_cliente].drop_duplicates(subset=['nro_cliente_cli'])
 
@@ -713,7 +716,7 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     nro_cliente = str(row.get('Nº Cliente', ''))
     direccion = str(row.get('Dirección', 'Sin dirección'))
     telefono = str(row.get('Teléfono', 'Sin teléfono'))
-    plan = str(row.get('Plan', '')) # <-- Extraemos la columna Plan
+    plan = str(row.get('Plan_Limpio', '')) # Usamos la nueva columna procesada
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
     detalles = str(row.get('Detalles', ''))
     sector = str(row.get('Sector', ''))
@@ -739,7 +742,7 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
         msg += f"📞 *TEL:* {telefono}\n"
         
     # <-- Aquí insertamos el plan justo debajo de teléfono y arriba de precinto
-    if plan and plan not in ['nan', 'None', '', '*', ' ']:
+    if plan and plan.lower() not in ['nan', 'none', '', '*', ' ']:
         msg += f"📄 *PLAN:* {plan}\n"
         
     if precinto:
