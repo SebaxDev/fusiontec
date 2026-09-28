@@ -154,11 +154,6 @@ def init_google_sheets():
 # RESOLVER ÍNDICES DE COLUMNAS UNA SOLA VEZ
 # =========================================================
 def resolver_col_indices_clientes(ws_clientes):
-    """
-    Lee los headers de la hoja Clientes UNA vez y devuelve
-    un dict con los índices (1-based) de cada columna buscada.
-    Se almacena en session_state para no repetir la llamada API.
-    """
     if 'clientes_col_idx' in st.session_state:
         return st.session_state['clientes_col_idx']
 
@@ -218,7 +213,12 @@ def cargar_datos():
     if 'precinto_cliente' in df_c.columns:
         df_c['precinto_cliente'] = df_c['precinto_cliente'].replace(['*', '', ' '], np.nan)
 
-    datos_cliente = df_c[['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente']].drop_duplicates(subset=['nro_cliente_cli'])
+    # Agregamos la columna Plan dinámicamente si existe en la hoja Clientes
+    cols_cliente = ['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente']
+    if 'Plan' in df_c.columns:
+        cols_cliente.append('Plan')
+
+    datos_cliente = df_c[cols_cliente].drop_duplicates(subset=['nro_cliente_cli'])
 
     df_r = df_reclamos.copy()
     df_r['Nº Cliente'] = df_r['Nº Cliente'].astype(str)
@@ -237,24 +237,17 @@ def cargar_datos():
     return df_r, df_usuarios, df_clientes_raw, df_novedades
 
 # =========================================================
-# FUNCIÓN PARA DIBUJAR TARJETAS (COMPACTA)
+# FUNCIÓN PARA DIBUJAR TARJETAS
 # =========================================================
 def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                        ws_clientes=None, df_clientes_raw=None,
                        clientes_col_idx=None, modo="en_curso"):
-    """
-    Renderiza una tarjeta compacta de reclamo.
-    clientes_col_idx: dict con {'precinto': int|None, 'obs': int|None, 'lat': int|None, 'lon': int|None}
-    modo: "en_curso" → formulario de verificar
-          "pendiente" → formulario de asignar técnico
-    """
     if clientes_col_idx is None:
         clientes_col_idx = {'precinto': None, 'obs': None, 'lat': None, 'lon': None}
 
     sheet_row_num = row.name + 2
     horas = row['Horas_Transcurridas']
 
-    # --- Badge ---
     badge = "🟢 Normal"
     badge_color = "#4caf50"
     if pd.notna(horas):
@@ -265,7 +258,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
             badge = "🟡 +24hs"
             badge_color = "#ff9800"
 
-    # --- Extraer campos ---
     direccion = str(row.get('Dirección', '')) if pd.notna(row.get('Dirección')) else ''
     telefono = str(row.get('Teléfono', '')) if pd.notna(row.get('Teléfono')) else ''
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
@@ -279,7 +271,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
     if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '', ' ']:
         precinto = str(row.get('precinto_cliente'))
 
-    # --- Tiempo transcurrido (compacto) ---
     if pd.notna(horas):
         if horas < 1:
             texto_tiempo = f"{int(horas * 60)}min"
@@ -290,11 +281,9 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
     else:
         texto_tiempo = "?"
 
-    # --- Ubicación ---
     tiene_ubicacion = pd.notna(row.get('lat')) and pd.notna(row.get('lon'))
     maps_url = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}" if tiene_ubicacion else None
 
-    # --- Buscar fila del cliente en hoja ---
     cliente_fila = None
     cliente_match = None
     if ws_clientes is not None and df_clientes_raw is not None:
@@ -304,14 +293,12 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
         if not cliente_match.empty:
             cliente_fila = cliente_match.index[0] + 2
 
-    # --- Índices de columna (ya resueltos, sin llamada API) ---
     col_precinto_idx = clientes_col_idx.get('precinto')
     col_lat_idx = clientes_col_idx.get('lat')
     col_lon_idx = clientes_col_idx.get('lon')
     col_obs_idx = clientes_col_idx.get('obs')
 
     with st.container(border=True):
-        # ── LÍNEA 1: Header con badge y tiempo ──
         tecnico_html = f" <small style='color:#888;'>👷{tecnico}</small>" if (es_admin and tecnico) else ""
         st.markdown(
             f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
@@ -321,7 +308,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
             unsafe_allow_html=True
         )
 
-        # ── LÍNEA 2: Sector · Reclamo ──
         info_parts = []
         if sector:
             info_parts.append(f"📍{sector}")
@@ -330,7 +316,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
         if info_parts:
             st.markdown(" · ".join(info_parts))
 
-        # ── LÍNEA 3: Dirección · Teléfono ──
         contact_parts = []
         if direccion:
             contact_parts.append(f"🏠{direccion}")
@@ -339,7 +324,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
         if contact_parts:
             st.markdown(" · ".join(contact_parts))
 
-        # ── LÍNEA 4: Precinto · Maps ──
         loc_parts = []
         if precinto:
             loc_parts.append(f"🔒{precinto}")
@@ -353,11 +337,9 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
 
         st.markdown(" · ".join(loc_parts), unsafe_allow_html=True)
 
-        # ── Detalles ──
         if detalles:
             st.caption(f"📝 {detalles}")
 
-        # ── EDITAR PRECINTO/UBICACIÓN (siempre disponible para admin) ──
         if es_admin and cliente_fila is not None:
             with st.expander("✏️ Editar precinto / ubicación"):
                 col_edit1, col_edit2 = st.columns(2)
@@ -432,7 +414,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                                 except Exception as e:
                                     st.error(f"❌ {e}")
 
-        # ── FORMULARIO: VERIFICAR (modo en_curso) ──
         if modo == "en_curso":
             with st.form(f"form_verify_{sheet_row_num}"):
                 obs = st.text_input(
@@ -463,7 +444,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-        # ── FORMULARIO: ASIGNAR (modo pendiente) ──
         elif modo == "pendiente" and es_admin:
             with st.form(f"form_asignar_{nro_cliente}_{sheet_row_num}"):
                 tecnicos_sel = st.multiselect(
@@ -733,6 +713,7 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     nro_cliente = str(row.get('Nº Cliente', ''))
     direccion = str(row.get('Dirección', 'Sin dirección'))
     telefono = str(row.get('Teléfono', 'Sin teléfono'))
+    plan = str(row.get('Plan', '')) # <-- Extraemos la columna Plan
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
     detalles = str(row.get('Detalles', ''))
     sector = str(row.get('Sector', ''))
@@ -753,12 +734,19 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     if sector:
         msg += f"📍 *SECTOR:* {sector}\n"
     msg += f"🏠 *DIRECCIÓN:* {direccion}\n"
+    
     if telefono and telefono != 'Sin teléfono':
         msg += f"📞 *TEL:* {telefono}\n"
+        
+    # <-- Aquí insertamos el plan justo debajo de teléfono y arriba de precinto
+    if plan and plan not in ['nan', 'None', '', '*', ' ']:
+        msg += f"📄 *PLAN:* {plan}\n"
+        
     if precinto:
         msg += f"🔒 *PRECINTO:* {precinto}\n"
     else:
         msg += f"🔒 *PRECINTO:* No cuenta con número de precinto\n"
+        
     msg += sep + "\n"
     msg += f"⚙️ *RECLAMO:* {tipo_reclamo}\n"
     if detalles:
