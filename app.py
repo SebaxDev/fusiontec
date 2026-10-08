@@ -94,7 +94,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# CONFIGURACIÓN GOOGLE SHEETS
+# CONFIGURACIÓN GOOGLE SHEETS Y LISTAS
 # =========================================================
 SHEET_ID = "13R_3Mdr25Jd-nGhK7CxdcbKkFWLc0LPdYrOLOY8sZJo"
 
@@ -108,6 +108,15 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
+
+# Listas Globales
+TECNICOS_DISPONIBLES = [
+    "BLUME", "CONEJO", "GABRIEL", "JUAN", "JUNIOR", "MAXI", "MARKI",
+    "PEDRITO", "RAMON", "RENE", "ROQUE", "VIKI", "OFICINA", "BASE"
+]
+SECTORES_DISPONIBLES = [str(n) for n in range(1, 18)]
+SPLITTERS_DISPONIBLES = ["1/4", "1/8", "1/16"]
+MARCAS_EQUIPO = ["Huawei", "VSol"]
 
 # =========================================================
 # ESCUDOS ANTI-BLOQUEO (TENACITY)
@@ -128,6 +137,21 @@ def safe_update_cell(worksheet, row, col, val):
 def safe_append_row(worksheet, row_data):
     return worksheet.append_row(row_data)
 
+# Wrappers para compatibilidad con lógica de Cajas NAP
+def _do_batch_update(ws, upd):
+    try:
+        safe_batch_update(ws, upd)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def _do_append(ws, row):
+    try:
+        safe_append_row(ws, row)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
 # =========================================================
 # NOMBRES DE COLUMNAS EN HOJA CLIENTES
 # =========================================================
@@ -136,14 +160,6 @@ COL_CLIENTE_CAJA = 'Caja NAP'
 COL_CLIENTE_OBS = 'Observaciones'
 COL_CLIENTE_LAT = 'Latitud'
 COL_CLIENTE_LON = 'Longitud'
-
-# =========================================================
-# LISTA DE TÉCNICOS
-# =========================================================
-TECNICOS_DISPONIBLES = [
-    "BLUME", "CONEJO", "GABRIEL", "JUAN", "JUNIOR", "MAXI", "MARKI",
-    "PEDRITO", "RAMON", "RENE", "ROQUE", "VIKI", "OFICINA", "BASE"
-]
 
 # =========================================================
 # CONEXIÓN GOOGLE SHEETS
@@ -576,7 +592,6 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                             fecha_obs = f"{ahora.day}/{ahora.month}/{ahora.year}"
                             obs_text = f"{fecha_obs}: {obs.strip().upper()}"
 
-                            # Nota: update_cell no está cacheado para lectura, pero read es barato. Lo envolvemos igual.
                             current_val = safe_get_all_records(ws_clientes)[cliente_fila-2].get(COL_CLIENTE_OBS, "")
                             new_val = (str(current_val).strip() + "\n" + obs_text) if str(current_val).strip() else obs_text
                             safe_update_cell(ws_clientes, cliente_fila, col_obs_idx, new_val)
@@ -998,318 +1013,694 @@ def main_app():
     # =====================================================
     if es_admin:
         st.markdown("### 👑 Panel de Administración")
+        
+        # --- PESTAÑAS ---
+        tab_reclamos, tab_cajas = st.tabs(["📋 Gestión de Reclamos", "📦 Gestión de Cajas NAP"])
 
-        mask_en_curso = df_reclamos['Estado_Limpio'] == "En curso"
-        mask_verificados = df_reclamos['Estado_Limpio'] == "Verificado"
-        mask_pendientes = df_reclamos['Estado_Limpio'] == "Pendiente"
-        mask_criticos = (df_reclamos['Horas_Transcurridas'] >= 48) & (df_reclamos['Estado_Limpio'].isin(["En curso", "Pendiente"]))
+        with tab_reclamos:
+            mask_en_curso = df_reclamos['Estado_Limpio'] == "En curso"
+            mask_verificados = df_reclamos['Estado_Limpio'] == "Verificado"
+            mask_pendientes = df_reclamos['Estado_Limpio'] == "Pendiente"
+            mask_criticos = (df_reclamos['Horas_Transcurridas'] >= 48) & (df_reclamos['Estado_Limpio'].isin(["En curso", "Pendiente"]))
 
-        count_curso = int(mask_en_curso.sum())
-        count_verif = int(mask_verificados.sum())
-        count_pend = int(mask_pendientes.sum())
-        count_crit = int(mask_criticos.sum())
+            count_curso = int(mask_en_curso.sum())
+            count_verif = int(mask_verificados.sum())
+            count_pend = int(mask_pendientes.sum())
+            count_crit = int(mask_criticos.sum())
 
-        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-        with col_s1: st.metric("🟢 En Curso", count_curso)
-        with col_s2: st.metric("✅ Verificados", count_verif)
-        with col_s3: st.metric("⏸️ Pendientes", count_pend)
-        with col_s4: st.metric("🔴 +48 hs", count_crit)
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            with col_s1: st.metric("🟢 En Curso", count_curso)
+            with col_s2: st.metric("✅ Verificados", count_verif)
+            with col_s3: st.metric("⏸️ Pendientes", count_pend)
+            with col_s4: st.metric("🔴 +48 hs", count_crit)
 
-        # --- HERRAMIENTAS ADMIN ---
-        with st.container(border=True):
-            st.markdown("**⚙️ Herramientas de Gestión**")
-            col_p1, col_p2, col_p3 = st.columns(3)
+            # --- HERRAMIENTAS ADMIN ---
+            with st.container(border=True):
+                st.markdown("**⚙️ Herramientas de Gestión**")
+                col_p1, col_p2, col_p3 = st.columns(3)
 
-            with col_p1:
-                if st.button("📄 PDF Resumen", use_container_width=True):
-                    with st.spinner("Generando PDF..."):
-                        try:
-                            estados_pdf = ["En curso", "Verificado"]
-                            mask_pdf = df_reclamos['Estado_Limpio'].isin(estados_pdf)
-                            df_activos_pdf = df_reclamos[mask_pdf & mask_tecnico_asignado].copy()
-                            pdf_bytes = generar_pdf(df_activos_pdf, datetime.now().strftime("%d/%m/%Y"))
-                            st.download_button(
-                                label="⬇️ Descargar PDF Resumen",
-                                data=pdf_bytes,
-                                file_name=f"Reclamos_{datetime.now().strftime('%Y%m%d')}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True
-                            )
-                        except Exception as e:
-                            st.error(f"Error al generar PDF: {e}")
-
-            with col_p2:
-                st.markdown("🔒 Verificados → Resuelto")
-                confirmar_cierre = st.checkbox("Confirmar cierre", key="chk_cierre")
-                if st.button("🔒 Cierre Masivo", disabled=not confirmar_cierre, use_container_width=True):
-                    try:
-                        idxs = df_reclamos[mask_verificados].index.tolist()
-                        if not idxs:
-                            st.warning("No hay reclamos 'Verificado' para cerrar.")
-                        else:
-                            col_idx = df_reclamos.columns.get_loc('Estado') + 1
-                            updates = []
-                            for i in idxs:
-                                sheet_row_num = i + 2
-                                cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
-                                updates.append({"range": cell_range, "values": [["Resuelto"]]})
-                            safe_batch_update(ws_reclamos, updates)
-                            st.cache_data.clear()
-                            st.success(f"¡{len(updates)} reclamos cerrados como Resuelto!")
-                            time.sleep(2)
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"Error en cierre masivo: {e}")
-
-            with col_p3:
-                st.markdown("⏸️ En Curso → Pendiente")
-                confirmar_pendiente = st.checkbox("Confirmar pase", key="chk_pendiente")
-                if st.button("⏸️ Pasar a Pendiente", disabled=not confirmar_pendiente, use_container_width=True):
-                    try:
-                        idxs = df_reclamos[mask_en_curso].index.tolist()
-                        if not idxs:
-                            st.warning("No hay reclamos 'En curso' para pasar.")
-                        else:
-                            col_idx = df_reclamos.columns.get_loc('Estado') + 1
-                            updates = []
-                            for i in idxs:
-                                sheet_row_num = i + 2
-                                cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
-                                updates.append({"range": cell_range, "values": [["Pendiente"]]})
-                            safe_batch_update(ws_reclamos, updates)
-                            st.cache_data.clear()
-                            st.success(f"¡{len(updates)} reclamos pasados a Pendiente!")
-                            time.sleep(2)
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"Error al pasar a Pendiente: {e}")
-
-        # --- PDF VERIFICADOS DETALLADO ---
-        with st.container(border=True):
-            st.markdown("**📋 Exportación Detallada**")
-            col_d1, col_d2 = st.columns(2)
-
-            with col_d1:
-                if st.button("✅ PDF Verificados Detallado", use_container_width=True, type="primary"):
-                    with st.spinner("Generando PDF detallado..."):
-                        try:
-                            df_verif_pdf = df_reclamos[mask_verificados].copy()
-                            if df_verif_pdf.empty:
-                                st.warning("No hay reclamos verificados para exportar.")
-                            else:
-                                df_verif_pdf = df_verif_pdf.sort_values(
-                                    by=['Tecnico_Limpio', 'Nº Cliente'],
-                                    ascending=[True, True]
-                                )
-                                pdf_bytes = generar_pdf_verificados_detallado(df_verif_pdf)
+                with col_p1:
+                    if st.button("📄 PDF Resumen", use_container_width=True):
+                        with st.spinner("Generando PDF..."):
+                            try:
+                                estados_pdf = ["En curso", "Verificado"]
+                                mask_pdf = df_reclamos['Estado_Limpio'].isin(estados_pdf)
+                                df_activos_pdf = df_reclamos[mask_pdf & mask_tecnico_asignado].copy()
+                                pdf_bytes = generar_pdf(df_activos_pdf, datetime.now().strftime("%d/%m/%Y"))
                                 st.download_button(
-                                    label="⬇️ Descargar PDF Verificados",
+                                    label="⬇️ Descargar PDF Resumen",
                                     data=pdf_bytes,
-                                    file_name=f"Verificados_Detallado_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                    file_name=f"Reclamos_{datetime.now().strftime('%Y%m%d')}.pdf",
                                     mime="application/pdf",
                                     use_container_width=True
                                 )
-                        except Exception as e:
-                            st.error(f"Error al generar PDF: {e}")
+                            except Exception as e:
+                                st.error(f"Error al generar PDF: {e}")
 
-            with col_d2:
-                st.caption("""
-                **Este PDF incluye:**
-                - Solo reclamos con estado **Verificado**
-                - Formato de tabla lineal (A4 vertical)
-                - Columnas: Nº Cliente, Nombre, Tipo, Precinto, Técnico
-                - Ordenado por técnico
-                """)
-
-        # --- NOVEDADES ADMIN ---
-        with st.container(border=True):
-            st.markdown("**📢 Novedades del Día**")
-
-            if not df_novedades.empty:
-                ultimas = df_novedades.tail(3).iloc[::-1]
-                for _, nrow in ultimas.iterrows():
-                    f_nov = str(nrow.get('Fecha', ''))
-                    m_nov = str(nrow.get('Mensaje', ''))
-                    if m_nov and m_nov != 'nan':
-                        st.markdown(f"📌 **{f_nov}:** {m_nov}")
-
-            with st.form("form_novedad"):
-                nueva_novedad = st.text_input(
-                    "Escribir nueva novedad",
-                    placeholder="Ej: Hoy se trabaja hasta las 18",
-                    key="nueva_nov_input"
-                )
-                submit_nov = st.form_submit_button("📢 Publicar Novedad", use_container_width=True)
-                if submit_nov:
-                    if not nueva_novedad.strip():
-                        st.error("❌ Escribí un mensaje.")
-                    else:
+                with col_p2:
+                    st.markdown("🔒 Verificados → Resuelto")
+                    confirmar_cierre = st.checkbox("Confirmar cierre", key="chk_cierre")
+                    if st.button("🔒 Cierre Masivo", disabled=not confirmar_cierre, use_container_width=True):
                         try:
-                            tz_arg = timezone(timedelta(hours=-3))
-                            ahora = datetime.now(tz_arg)
-                            fecha_str = f"{ahora.day}/{ahora.month}/{ahora.year}"
-                            safe_append_row(ws_novedades, [fecha_str, nueva_novedad.strip()])
-                            st.cache_data.clear()
-                            st.success("✅ Novedad publicada.")
-                            time.sleep(1)
-                            st.rerun()
+                            idxs = df_reclamos[mask_verificados].index.tolist()
+                            if not idxs:
+                                st.warning("No hay reclamos 'Verificado' para cerrar.")
+                            else:
+                                col_idx = df_reclamos.columns.get_loc('Estado') + 1
+                                updates = []
+                                for i in idxs:
+                                    sheet_row_num = i + 2
+                                    cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
+                                    updates.append({"range": cell_range, "values": [["Resuelto"]]})
+                                safe_batch_update(ws_reclamos, updates)
+                                st.cache_data.clear()
+                                st.success(f"¡{len(updates)} reclamos cerrados como Resuelto!")
+                                time.sleep(2)
+                                st.rerun()
                         except Exception as e:
-                            st.error(f"❌ Error: {e}")
+                            st.error(f"Error en cierre masivo: {e}")
 
-        st.divider()
+                with col_p3:
+                    st.markdown("⏸️ En Curso → Pendiente")
+                    confirmar_pendiente = st.checkbox("Confirmar pase", key="chk_pendiente")
+                    if st.button("⏸️ Pasar a Pendiente", disabled=not confirmar_pendiente, use_container_width=True):
+                        try:
+                            idxs = df_reclamos[mask_en_curso].index.tolist()
+                            if not idxs:
+                                st.warning("No hay reclamos 'En curso' para pasar.")
+                            else:
+                                col_idx = df_reclamos.columns.get_loc('Estado') + 1
+                                updates = []
+                                for i in idxs:
+                                    sheet_row_num = i + 2
+                                    cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
+                                    updates.append({"range": cell_range, "values": [["Pendiente"]]})
+                                safe_batch_update(ws_reclamos, updates)
+                                st.cache_data.clear()
+                                st.success(f"¡{len(updates)} reclamos pasados a Pendiente!")
+                                time.sleep(2)
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al pasar a Pendiente: {e}")
 
-        # =====================================================
-        # MENSAJE WHATSAPP
-        # =====================================================
-        if "mensaje_para_copiar" in st.session_state and st.session_state["mensaje_para_copiar"]:
-            with st.expander("📱 Mensaje para WhatsApp (Click para abrir)", expanded=True):
-                st.info("📋 Copiá el siguiente texto y enviáselo al técnico:")
-                st.text_area(
-                    "Texto del mensaje",
-                    value=st.session_state["mensaje_para_copiar"],
-                    height=250,
-                    key="msg_display"
-                )
-                col_c1, col_c2 = st.columns(2)
-                with col_c1:
-                    if st.button("✅ Ya lo envié (Limpiar)", use_container_width=True):
-                        del st.session_state["mensaje_para_copiar"]
-                        st.rerun()
-                with col_c2:
-                    st.markdown("<small><i>Tip: Selecciona el texto → Ctrl+C</i></small>", unsafe_allow_html=True)
+            # --- PDF VERIFICADOS DETALLADO ---
+            with st.container(border=True):
+                st.markdown("**📋 Exportación Detallada**")
+                col_d1, col_d2 = st.columns(2)
+
+                with col_d1:
+                    if st.button("✅ PDF Verificados Detallado", use_container_width=True, type="primary"):
+                        with st.spinner("Generando PDF detallado..."):
+                            try:
+                                df_verif_pdf = df_reclamos[mask_verificados].copy()
+                                if df_verif_pdf.empty:
+                                    st.warning("No hay reclamos verificados para exportar.")
+                                else:
+                                    df_verif_pdf = df_verif_pdf.sort_values(
+                                        by=['Tecnico_Limpio', 'Nº Cliente'],
+                                        ascending=[True, True]
+                                    )
+                                    pdf_bytes = generar_pdf_verificados_detallado(df_verif_pdf)
+                                    st.download_button(
+                                        label="⬇️ Descargar PDF Verificados",
+                                        data=pdf_bytes,
+                                        file_name=f"Verificados_Detallado_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                        mime="application/pdf",
+                                        use_container_width=True
+                                    )
+                            except Exception as e:
+                                st.error(f"Error al generar PDF: {e}")
+
+                with col_d2:
+                    st.caption("""
+                    **Este PDF incluye:**
+                    - Solo reclamos con estado **Verificado**
+                    - Formato de tabla lineal (A4 vertical)
+                    - Columnas: Nº Cliente, Nombre, Tipo, Precinto, Técnico
+                    - Ordenado por técnico
+                    """)
+
+            # --- NOVEDADES ADMIN ---
+            with st.container(border=True):
+                st.markdown("**📢 Novedades del Día**")
+
+                if not df_novedades.empty:
+                    ultimas = df_novedades.tail(3).iloc[::-1]
+                    for _, nrow in ultimas.iterrows():
+                        f_nov = str(nrow.get('Fecha', ''))
+                        m_nov = str(nrow.get('Mensaje', ''))
+                        if m_nov and m_nov != 'nan':
+                            st.markdown(f"📌 **{f_nov}:** {m_nov}")
+
+                with st.form("form_novedad"):
+                    nueva_novedad = st.text_input(
+                        "Escribir nueva novedad",
+                        placeholder="Ej: Hoy se trabaja hasta las 18",
+                        key="nueva_nov_input"
+                    )
+                    submit_nov = st.form_submit_button("📢 Publicar Novedad", use_container_width=True)
+                    if submit_nov:
+                        if not nueva_novedad.strip():
+                            st.error("❌ Escribí un mensaje.")
+                        else:
+                            try:
+                                tz_arg = timezone(timedelta(hours=-3))
+                                ahora = datetime.now(tz_arg)
+                                fecha_str = f"{ahora.day}/{ahora.month}/{ahora.year}"
+                                safe_append_row(ws_novedades, [fecha_str, nueva_novedad.strip()])
+                                st.cache_data.clear()
+                                st.success("✅ Novedad publicada.")
+                                time.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error: {e}")
+
             st.divider()
 
-        # --- CONTADORES POR TÉCNICO ---
-        mask_verificados_tec = (df_reclamos['Estado_Limpio'] == "Verificado") & mask_tecnico_asignado
-        verificados_por_tecnico = df_reclamos[mask_verificados_tec].groupby('Tecnico_Limpio').size().to_dict()
-
-        # =====================================================
-        # 🔍 BUSCADOR + FILTRO DE TÉCNICO
-        # =====================================================
-        mask_estado_display = df_reclamos['Estado_Limpio'] == "En curso"
-        df_activos_display = df_reclamos[mask_estado_display & mask_tecnico_asignado].copy()
-
-        if not df_activos_display.empty:
-            search_query = st.text_input(
-                "🔍 Buscar reclamo en curso",
-                placeholder="Nº cliente, nombre, dirección, sector, técnico...",
-                key="search_reclamos_admin"
-            )
-
-            df_activos_display = filtrar_por_busqueda(df_activos_display, search_query)
-
-            tecnicos_unicos = sorted(df_activos_display['Tecnico_Limpio'].dropna().unique()) if not df_activos_display.empty else []
-            tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
-
-            if tecnico_seleccionado == "Todos":
-                df_filtrado = df_activos_display.copy()
-            else:
-                df_filtrado = df_activos_display[df_activos_display['Tecnico_Limpio'] == tecnico_seleccionado].copy()
-
-            df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
-
-            if tecnico_seleccionado == "Todos":
-                tecnicos_en_vista = sorted(df_filtrado['Tecnico_Limpio'].dropna().unique())
-                total_en_curso = len(df_filtrado)
-                total_verificados = sum(verificados_por_tecnico.get(t, 0) for t in tecnicos_en_vista)
-                total_general = total_en_curso + total_verificados
-                st.markdown(f"**Total: {total_general}** (En Curso {total_en_curso} + Verificados {total_verificados})")
-
-                if search_query.strip():
-                    st.caption(f"Mostrando {len(df_filtrado)} resultado(s) para \"{search_query.strip()}\"")
-
-                for tecnico, grupo in df_filtrado.groupby('Tecnico_Limpio'):
-                    en_curso = len(grupo)
-                    verificados = verificados_por_tecnico.get(tecnico, 0)
-                    total = en_curso + verificados
-                    with st.expander(f"👷 {tecnico} — {total} (Curso {en_curso} + OK {verificados})"):
-                        for idx, row in grupo.iterrows():
-                            renderizar_tarjeta(
-                                row, df_reclamos, ws_reclamos,
-                                es_admin=True, ws_clientes=ws_clientes,
-                                df_clientes_raw=df_clientes_raw,
-                                clientes_col_idx=clientes_col_idx,
-                                modo="en_curso",
-                                ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
-                            )
-            else:
-                en_curso = len(df_filtrado)
-                verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
-                total = en_curso + verificados
-                st.markdown(f"**{tecnico_seleccionado}: {total}** (Curso {en_curso} + OK {verificados})")
-
-                if search_query.strip():
-                    st.caption(f"Mostrando {len(df_filtrado)} resultado(s) para \"{search_query.strip()}\"")
-
-                for idx, row in df_filtrado.iterrows():
-                    renderizar_tarjeta(
-                        row, df_reclamos, ws_reclamos,
-                        es_admin=True, ws_clientes=ws_clientes,
-                        df_clientes_raw=df_clientes_raw,
-                        clientes_col_idx=clientes_col_idx,
-                        modo="en_curso",
-                        ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
+            # =====================================================
+            # MENSAJE WHATSAPP
+            # =====================================================
+            if "mensaje_para_copiar" in st.session_state and st.session_state["mensaje_para_copiar"]:
+                with st.expander("📱 Mensaje para WhatsApp (Click para abrir)", expanded=True):
+                    st.info("📋 Copiá el siguiente texto y enviáselo al técnico:")
+                    st.text_area(
+                        "Texto del mensaje",
+                        value=st.session_state["mensaje_para_copiar"],
+                        height=250,
+                        key="msg_display"
                     )
-        else:
-            st.info("ℹ️ No hay reclamos En curso con técnico asignado.")
+                    col_c1, col_c2 = st.columns(2)
+                    with col_c1:
+                        if st.button("✅ Ya lo envié (Limpiar)", use_container_width=True):
+                            del st.session_state["mensaje_para_copiar"]
+                            st.rerun()
+                    with col_c2:
+                        st.markdown("<small><i>Tip: Selecciona el texto → Ctrl+C</i></small>", unsafe_allow_html=True)
+                st.divider()
 
-        # =====================================================
-        # SECCIÓN PENDIENTES
-        # =====================================================
-        st.divider()
-        df_pendientes = df_reclamos[df_reclamos['Estado_Limpio'] == "Pendiente"].copy()
+            # --- CONTADORES POR TÉCNICO ---
+            mask_verificados_tec = (df_reclamos['Estado_Limpio'] == "Verificado") & mask_tecnico_asignado
+            verificados_por_tecnico = df_reclamos[mask_verificados_tec].groupby('Tecnico_Limpio').size().to_dict()
 
-        if not df_pendientes.empty:
-            df_pendientes = df_pendientes.sort_values(by='Horas_Transcurridas', ascending=False)
+            # =====================================================
+            # 🔍 BUSCADOR + FILTRO DE TÉCNICO
+            # =====================================================
+            mask_estado_display = df_reclamos['Estado_Limpio'] == "En curso"
+            df_activos_display = df_reclamos[mask_estado_display & mask_tecnico_asignado].copy()
 
-            with st.expander(f"📋 Reclamos Pendientes ({len(df_pendientes)})"):
-                search_pend = st.text_input(
-                    "🔍 Buscar pendiente",
-                    placeholder="Nº cliente, nombre, dirección...",
-                    key="search_pendientes"
+            if not df_activos_display.empty:
+                search_query = st.text_input(
+                    "🔍 Buscar reclamo en curso",
+                    placeholder="Nº cliente, nombre, dirección, sector, técnico...",
+                    key="search_reclamos_admin"
                 )
-                df_pendientes_filtrado = filtrar_por_busqueda(df_pendientes, search_pend)
 
-                for idx, row in df_pendientes_filtrado.iterrows():
-                    renderizar_tarjeta(
-                        row, df_reclamos, ws_reclamos,
-                        es_admin=True, ws_clientes=ws_clientes,
-                        df_clientes_raw=df_clientes_raw,
-                        clientes_col_idx=clientes_col_idx,
-                        modo="pendiente",
-                        ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
+                df_activos_display = filtrar_por_busqueda(df_activos_display, search_query)
+
+                tecnicos_unicos = sorted(df_activos_display['Tecnico_Limpio'].dropna().unique()) if not df_activos_display.empty else []
+                tecnico_seleccionado = st.selectbox("Filtrar por Técnico", ["Todos"] + tecnicos_unicos, index=0)
+
+                if tecnico_seleccionado == "Todos":
+                    df_filtrado = df_activos_display.copy()
+                else:
+                    df_filtrado = df_activos_display[df_activos_display['Tecnico_Limpio'] == tecnico_seleccionado].copy()
+
+                df_filtrado = df_filtrado.sort_values(by='Horas_Transcurridas', ascending=False)
+
+                if tecnico_seleccionado == "Todos":
+                    tecnicos_en_vista = sorted(df_filtrado['Tecnico_Limpio'].dropna().unique())
+                    total_en_curso = len(df_filtrado)
+                    total_verificados = sum(verificados_por_tecnico.get(t, 0) for t in tecnicos_en_vista)
+                    total_general = total_en_curso + total_verificados
+                    st.markdown(f"**Total: {total_general}** (En Curso {total_en_curso} + Verificados {total_verificados})")
+
+                    if search_query.strip():
+                        st.caption(f"Mostrando {len(df_filtrado)} resultado(s) para \"{search_query.strip()}\"")
+
+                    for tecnico, grupo in df_filtrado.groupby('Tecnico_Limpio'):
+                        en_curso = len(grupo)
+                        verificados = verificados_por_tecnico.get(tecnico, 0)
+                        total = en_curso + verificados
+                        with st.expander(f"👷 {tecnico} — {total} (Curso {en_curso} + OK {verificados})"):
+                            for idx, row in grupo.iterrows():
+                                renderizar_tarjeta(
+                                    row, df_reclamos, ws_reclamos,
+                                    es_admin=True, ws_clientes=ws_clientes,
+                                    df_clientes_raw=df_clientes_raw,
+                                    clientes_col_idx=clientes_col_idx,
+                                    modo="en_curso",
+                                    ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
+                                )
+                else:
+                    en_curso = len(df_filtrado)
+                    verificados = verificados_por_tecnico.get(tecnico_seleccionado, 0)
+                    total = en_curso + verificados
+                    st.markdown(f"**{tecnico_seleccionado}: {total}** (Curso {en_curso} + OK {verificados})")
+
+                    if search_query.strip():
+                        st.caption(f"Mostrando {len(df_filtrado)} resultado(s) para \"{search_query.strip()}\"")
+
+                    for idx, row in df_filtrado.iterrows():
+                        renderizar_tarjeta(
+                            row, df_reclamos, ws_reclamos,
+                            es_admin=True, ws_clientes=ws_clientes,
+                            df_clientes_raw=df_clientes_raw,
+                            clientes_col_idx=clientes_col_idx,
+                            modo="en_curso",
+                            ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
+                        )
+            else:
+                st.info("ℹ️ No hay reclamos En curso con técnico asignado.")
+
+            # =====================================================
+            # SECCIÓN PENDIENTES
+            # =====================================================
+            st.divider()
+            df_pendientes = df_reclamos[df_reclamos['Estado_Limpio'] == "Pendiente"].copy()
+
+            if not df_pendientes.empty:
+                df_pendientes = df_pendientes.sort_values(by='Horas_Transcurridas', ascending=False)
+
+                with st.expander(f"📋 Reclamos Pendientes ({len(df_pendientes)})"):
+                    search_pend = st.text_input(
+                        "🔍 Buscar pendiente",
+                        placeholder="Nº cliente, nombre, dirección...",
+                        key="search_pendientes"
                     )
-        else:
-            st.success("🎉 No hay reclamos Pendientes.")
+                    df_pendientes_filtrado = filtrar_por_busqueda(df_pendientes, search_pend)
+
+                    for idx, row in df_pendientes_filtrado.iterrows():
+                        renderizar_tarjeta(
+                            row, df_reclamos, ws_reclamos,
+                            es_admin=True, ws_clientes=ws_clientes,
+                            df_clientes_raw=df_clientes_raw,
+                            clientes_col_idx=clientes_col_idx,
+                            modo="pendiente",
+                            ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
+                        )
+            else:
+                st.success("🎉 No hay reclamos Pendientes.")
+
+            # =====================================================
+            # SECCIÓN VERIFICADOS (lista compacta)
+            # =====================================================
+            st.divider()
+            df_verificados_lista = df_reclamos[df_reclamos['Estado_Limpio'] == "Verificado"].copy()
+
+            if not df_verificados_lista.empty:
+                with st.expander(f"✅ Verificados - Control ({len(df_verificados_lista)})"):
+                    cols_disponibles = []
+                    if 'Nº Cliente' in df_verificados_lista.columns:
+                        cols_disponibles.append('Nº Cliente')
+                    if 'Nombre' in df_verificados_lista.columns:
+                        cols_disponibles.append('Nombre')
+                    if 'precinto_cliente' in df_verificados_lista.columns:
+                        cols_disponibles.append('precinto_cliente')
+                    cols_disponibles.append('Tecnico_Limpio')
+
+                    df_verif_compact = df_verificados_lista[cols_disponibles].copy()
+                    df_verif_compact.rename(columns={
+                        'Tecnico_Limpio': 'Técnico',
+                        'precinto_cliente': 'Precinto'
+                    }, inplace=True)
+                    df_verif_compact['Precinto'] = df_verif_compact['Precinto'].fillna('Sin precinto')
+                    df_verif_compact['Técnico'] = df_verif_compact['Técnico'].fillna('Sin asignar')
+
+                    st.dataframe(df_verif_compact, use_container_width=True, hide_index=True)
+            else:
+                st.info("ℹ️ No hay reclamos verificados aún.")
 
         # =====================================================
-        # SECCIÓN VERIFICADOS (lista compacta)
+        # PESTAÑA CAJAS NAP
         # =====================================================
-        st.divider()
-        df_verificados_lista = df_reclamos[df_reclamos['Estado_Limpio'] == "Verificado"].copy()
+        with tab_cajas:
+            st.subheader("📦 Editor de Cajas NAP")
 
-        if not df_verificados_lista.empty:
-            with st.expander(f"✅ Verificados - Control ({len(df_verificados_lista)})"):
-                cols_disponibles = []
-                if 'Nº Cliente' in df_verificados_lista.columns:
-                    cols_disponibles.append('Nº Cliente')
-                if 'Nombre' in df_verificados_lista.columns:
-                    cols_disponibles.append('Nombre')
-                if 'precinto_cliente' in df_verificados_lista.columns:
-                    cols_disponibles.append('precinto_cliente')
-                cols_disponibles.append('Tecnico_Limpio')
+            if df_cajas_raw is not None and ws_cajas is not None:
+                df_cajas_norm = df_cajas_raw.copy()
+                df_cajas_norm["N De Caja"] = df_cajas_norm["N De Caja"].astype(str).str.strip()
 
-                df_verif_compact = df_verificados_lista[cols_disponibles].copy()
-                df_verif_compact.rename(columns={
-                    'Tecnico_Limpio': 'Técnico',
-                    'precinto_cliente': 'Precinto'
-                }, inplace=True)
-                df_verif_compact['Precinto'] = df_verif_compact['Precinto'].fillna('Sin precinto')
-                df_verif_compact['Técnico'] = df_verif_compact['Técnico'].fillna('Sin asignar')
+                nro_caja = st.text_input(
+                    "Ingresá el N° de Caja NAP",
+                    placeholder="Ej: NAP-001",
+                    key="search_nro_caja"
+                ).strip()
 
-                st.dataframe(df_verif_compact, use_container_width=True, hide_index=True)
-        else:
-            st.info("ℹ️ No hay reclamos verificados aún.")
+                if nro_caja:
+                    caja_data = df_cajas_norm[df_cajas_norm["N De Caja"] == nro_caja]
+
+                    if caja_data.empty:
+                        # ==========================================
+                        # LA CAJA NO EXISTE - CREACION
+                        # ==========================================
+                        st.info("ℹ Esta caja NAP no existe en la base. Completá los datos para crearla.")
+
+                        with st.form("form_crear_caja"):
+                            col_c1, col_c2 = st.columns(2)
+
+                            with col_c1:
+                                nuevo_sector_caja = st.selectbox(
+                                    "🔢 Sector*", options=SECTORES_DISPONIBLES, index=0, key="caja_sector_new"
+                                )
+                                nuevo_barrio = st.text_input("🏘️ Barrio*", placeholder="Nombre del barrio")
+
+                            with col_c2:
+                                nuevo_lat_caja = st.text_input("📍 Latitud", value="-26.", key="caja_lat_new")
+                                nuevo_lon_caja = st.text_input("📍 Longitud", value="-59.", key="caja_lon_new")
+
+                            col_c3, col_c4 = st.columns(2)
+                            with col_c3:
+                                nuevo_obs_caja = st.text_input("📝 Observación", placeholder="Observaciones (opcional)")
+                                nueva_marca = st.selectbox("🏷️ Marca Equipo", options=MARCAS_EQUIPO, index=0, key="caja_marca_new")
+                            with col_c4:
+                                nuevo_splitter = st.selectbox(
+                                    "🔀 Splitter*",
+                                    options=SPLITTERS_DISPONIBLES,
+                                    index=1,
+                                    key="caja_splitter_new"
+                                )
+
+                            submit_crear_caja = st.form_submit_button("✅ Crear Nueva Caja NAP", use_container_width=True)
+
+                            if submit_crear_caja:
+                                if not nuevo_barrio.strip():
+                                    st.error("⚠️ El Barrio es un campo obligatorio.")
+                                else:
+                                    try:
+                                        float(nuevo_lat_caja.strip().replace(',', '.'))
+                                        float(nuevo_lon_caja.strip().replace(',', '.'))
+
+                                        fila_caja = [
+                                            nro_caja,
+                                            nuevo_sector_caja,
+                                            nuevo_barrio.upper().strip(),
+                                            nuevo_lat_caja.strip(),
+                                            nuevo_lon_caja.strip(),
+                                            nuevo_obs_caja.strip(),
+                                            nueva_marca.strip(),
+                                            nuevo_splitter.strip()
+                                        ]
+
+                                        success, error = _do_append(ws_cajas, fila_caja)
+
+                                        if success:
+                                            st.cache_data.clear()
+                                            st.success(f"✅ Caja NAP `{nro_caja}` creada correctamente. Podés buscarla ahora para cargar los puertos.")
+                                            time.sleep(1)
+                                            st.rerun()
+                                        else:
+                                            st.error(f"❌ Error al crear la caja NAP: {error}")
+
+                                    except ValueError:
+                                        st.error("❌ Las coordenadas deben ser valores numéricos (ej: -26.123456).")
+                                    except Exception as e:
+                                        st.error(f"❌ Error inesperado: {str(e)}")
+
+                    else:
+                        # ==========================================
+                        # LA CAJA SI EXISTE - EDICION
+                        # ==========================================
+                        caja = caja_data.iloc[0]
+                        caja_row_idx = caja.name + 2
+
+                        col_cr1, col_cr2, col_cr3, col_cr4, col_cr5 = st.columns(5)
+                        with col_cr1:
+                            st.markdown(f"**🔢 Sector:** {caja.get('Sector', 'N/A')}")
+                        with col_cr2:
+                            st.markdown(f"**🏘️ Barrio:** {caja.get('Barrio', 'N/A')}")
+                        with col_cr3:
+                            st.markdown(f"**🏷️ Marca Equipo:** {caja.get('Marca Equipo', 'N/A')}")
+                        with col_cr4:
+                            splitter_val = caja.get('Splitter', '')
+                            splitter_display = splitter_val if splitter_val and str(splitter_val).strip() not in ('', 'nan', 'None') else 'Sin asignar'
+                            st.markdown(f"**🔀 Splitter:** `{splitter_display}`")
+                        with col_cr5:
+                            lat_c = str(caja.get('Latitud', '')).strip()
+                            lon_c = str(caja.get('Longitud', '')).strip()
+                            if lat_c not in ("", "nan", "None") and lon_c not in ("", "nan", "None"):
+                                try:
+                                    float(lat_c.replace(',', '.'))
+                                    float(lon_c.replace(',', '.'))
+                                    maps_url_caja = f"https://www.google.com/maps?q={lat_c},{lon_c}"
+                                    st.markdown(f"**🗺️** [Ver en Maps]({maps_url_caja})")
+                                except (ValueError, TypeError):
+                                    st.markdown("**🗺️** Geo. inválida")
+                            else:
+                                st.markdown("**🗺️** Sin georef.")
+
+                        st.markdown("---")
+
+                        # ACORDEON CAJA 1: EDITAR DATOS PRINCIPALES
+                        with st.expander("✏️ Editar Datos de la Caja NAP (Sector, Barrio, Observación, Marca, Splitter)"):
+                            with st.form(f"form_editar_caja_{caja_row_idx}"):
+                                edit_ccol1, edit_ccol2 = st.columns(2)
+
+                                with edit_ccol1:
+                                    sector_actual_caja = str(caja.get("Sector", "1")).strip()
+                                    try:
+                                        sector_idx_caja = SECTORES_DISPONIBLES.index(sector_actual_caja) if sector_actual_caja in SECTORES_DISPONIBLES else 0
+                                    except ValueError:
+                                        sector_idx_caja = 0
+                                    edit_sector_caja = st.selectbox(
+                                        "🔢 Sector", options=SECTORES_DISPONIBLES, index=sector_idx_caja, key=f"caja_sec_{caja_row_idx}"
+                                    )
+                                    edit_barrio = st.text_input(
+                                        "🏘️ Barrio", value=str(caja.get("Barrio", "")), key=f"caja_barrio_{caja_row_idx}"
+                                    )
+                                    edit_obs_caja = st.text_input(
+                                        "📝 Observación", value=str(caja.get("Observacion", "")), key=f"caja_obs_{caja_row_idx}"
+                                    )
+
+                                with edit_ccol2:
+                                    marca_actual = str(caja.get("Marca Equipo", "Huawei")).strip()
+                                    try:
+                                        marca_idx = MARCAS_EQUIPO.index(marca_actual) if marca_actual in MARCAS_EQUIPO else 0
+                                    except ValueError:
+                                        marca_idx = 0
+                                    edit_marca = st.selectbox(
+                                        "🏷️ Marca Equipo", options=MARCAS_EQUIPO, index=marca_idx, key=f"caja_marca_{caja_row_idx}"
+                                    )
+
+                                    splitter_actual = str(caja.get("Splitter", "")).strip()
+                                    try:
+                                        splitter_idx = SPLITTERS_DISPONIBLES.index(splitter_actual) if splitter_actual in SPLITTERS_DISPONIBLES else 1
+                                    except ValueError:
+                                        splitter_idx = 1
+                                    edit_splitter = st.selectbox(
+                                        "🔀 Splitter",
+                                        options=SPLITTERS_DISPONIBLES,
+                                        index=splitter_idx,
+                                        key=f"caja_splitter_{caja_row_idx}"
+                                    )
+
+                                submit_edit_caja = st.form_submit_button("💾 Guardar Cambios en Caja NAP", use_container_width=True)
+
+                                if submit_edit_caja:
+                                    updates = []
+
+                                    if str(caja.get("Sector", "")).strip() != edit_sector_caja:
+                                        updates.append({"range": f"B{caja_row_idx}", "values": [[edit_sector_caja]]})
+
+                                    if str(caja.get("Barrio", "")).strip() != edit_barrio.upper().strip():
+                                        updates.append({"range": f"C{caja_row_idx}", "values": [[edit_barrio.upper().strip()]]})
+
+                                    if str(caja.get("Observacion", "")).strip() != edit_obs_caja.strip():
+                                        updates.append({"range": f"F{caja_row_idx}", "values": [[edit_obs_caja.strip()]]})
+
+                                    if str(caja.get("Marca Equipo", "")).strip() != edit_marca.strip():
+                                        updates.append({"range": f"G{caja_row_idx}", "values": [[edit_marca.strip()]]})
+
+                                    if str(caja.get("Splitter", "")).strip() != edit_splitter.strip():
+                                        updates.append({"range": f"H{caja_row_idx}", "values": [[edit_splitter.strip()]]})
+
+                                    if updates:
+                                        success, error = _do_batch_update(ws_cajas, updates)
+                                        if success:
+                                            st.cache_data.clear()
+                                            st.success("✅ Datos de la caja NAP actualizados correctamente.")
+                                            time.sleep(1)
+                                            st.rerun()
+                                        else:
+                                            st.error(f"❌ Error al actualizar datos: {error}")
+                                    else:
+                                        st.info("ℹ️ No se detectaron cambios en los datos de la caja NAP.")
+
+                        # ACORDEON CAJA 2: GEOREFERENCIA
+                        with st.expander("🗺 Georreferencia de Caja NAP"):
+                            lat_caja = str(caja.get("Latitud", "")).strip()
+                            lon_caja = str(caja.get("Longitud", "")).strip()
+
+                            has_geo_caja = False
+                            if lat_caja not in ("", "nan", "None") and lon_caja not in ("", "nan", "None"):
+                                try:
+                                    float(lat_caja.replace(',', '.'))
+                                    float(lon_caja.replace(',', '.'))
+                                    has_geo_caja = True
+                                except (ValueError, TypeError):
+                                    has_geo_caja = False
+
+                            if has_geo_caja:
+                                st.success("✅ Georreferencia registrada")
+                                maps_url_caja = f"https://www.google.com/maps?q={lat_caja},{lon_caja}"
+                                st.markdown(f"🗺️ [Ver ubicación en Google Maps]({maps_url_caja})")
+
+                                with st.form(f"form_editar_geo_caja_{caja_row_idx}"):
+                                    edit_lat_caja = st.text_input("Latitud", value=lat_caja, key=f"caja_lat_edit_{caja_row_idx}")
+                                    edit_lon_caja = st.text_input("Longitud", value=lon_caja, key=f"caja_lon_edit_{caja_row_idx}")
+                                    submit_edit_geo_caja = st.form_submit_button("💾 Actualizar Coordenadas")
+
+                                    if submit_edit_geo_caja:
+                                        try:
+                                            float(edit_lat_caja.strip().replace(',', '.'))
+                                            float(edit_lon_caja.strip().replace(',', '.'))
+
+                                            updates = [
+                                                {"range": f"D{caja_row_idx}", "values": [[edit_lat_caja.strip()]]},
+                                                {"range": f"E{caja_row_idx}", "values": [[edit_lon_caja.strip()]]}
+                                            ]
+                                            success, error = _do_batch_update(ws_cajas, updates)
+                                            if success:
+                                                st.cache_data.clear()
+                                                st.success("✅ Coordenadas de caja NAP actualizadas.")
+                                                time.sleep(1)
+                                                st.rerun()
+                                            else:
+                                                st.error(f"❌ Error: {error}")
+                                        except ValueError:
+                                            st.error("❌ Las coordenadas deben ser valores numéricos.")
+                            else:
+                                st.info("ℹ️ Esta caja NAP no tiene georreferencia cargada. Ingresá las coordenadas:")
+                                default_lat_caja = "-26."
+                                default_lon_caja = "-59."
+
+                                with st.form(f"form_cargar_geo_caja_{caja_row_idx}"):
+                                    val_lat_caja = lat_caja if lat_caja not in ("nan", "None", "") else default_lat_caja
+                                    val_lon_caja = lon_caja if lon_caja not in ("nan", "None", "") else default_lon_caja
+
+                                    new_lat_caja = st.text_input("Latitud", value=val_lat_caja, key=f"caja_lat_new_{caja_row_idx}")
+                                    new_lon_caja = st.text_input("Longitud", value=val_lon_caja, key=f"caja_lon_new_{caja_row_idx}")
+                                    submitted_caja_geo = st.form_submit_button("💾 Guardar Coordenadas")
+
+                                    if submitted_caja_geo:
+                                        if not new_lat_caja.strip() or not new_lon_caja.strip():
+                                            st.error("❌ Debés completar ambos campos para guardar.")
+                                        else:
+                                            try:
+                                                float(new_lat_caja.strip().replace(',', '.'))
+                                                float(new_lon_caja.strip().replace(',', '.'))
+
+                                                updates = [
+                                                    {"range": f"D{caja_row_idx}", "values": [[new_lat_caja.strip()]]},
+                                                    {"range": f"E{caja_row_idx}", "values": [[new_lon_caja.strip()]]}
+                                                ]
+                                                success, error = _do_batch_update(ws_cajas, updates)
+                                                if success:
+                                                    st.cache_data.clear()
+                                                    st.success("✅ Georreferencia de caja NAP guardada correctamente.")
+                                                    time.sleep(1)
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"❌ Error al guardar en la hoja: {error}")
+                                            except ValueError:
+                                                st.error("❌ Las coordenadas deben ser valores numéricos (ej: -26.123456).")
+
+                        # ACORDEON CAJA 3: GESTION DE PUERTOS (PRECINTOS) - (DIVIDIDO EN 2 COLUMNAS)
+                        with st.expander("🔌 Gestión de Puertos (Precintos)"):
+                            splitter_actual = str(caja.get('Splitter', '1/4')).strip()
+                            num_puertos = 4
+                            if splitter_actual == "1/8":
+                                num_puertos = 8
+                            elif splitter_actual == "1/16":
+                                num_puertos = 16
+
+                            letras_columnas = ["I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X"]
+
+                            with st.form(f"form_puertos_caja_{caja_row_idx}"):
+                                st.markdown(f"**Splitter {splitter_actual}** — Se han habilitado **{num_puertos}** puertos.")
+                                
+                                inputs_puertos = []
+                                mitad_puertos = num_puertos // 2
+                                
+                                col_p1, col_p2 = st.columns(2)
+                                
+                                # Generar dinámicamente los campos según el splitter en 2 columnas
+                                for i in range(num_puertos):
+                                    col_precinto = f"Precinto {i+1}"
+                                    val_actual_puerto = str(caja.get(col_precinto, "")).strip()
+                                    if val_actual_puerto in ("nan", "None"): val_actual_puerto = ""
+
+                                    # Buscar a quién pertenece este precinto actualmente
+                                    info_cliente = ""
+                                    if val_actual_puerto:
+                                        asociado = verificar_precinto_duplicado(df_clientes_raw, val_actual_puerto)
+                                        if asociado is not None:
+                                            info_cliente = f" (🟢 {asociado['Nº Cliente']} - {asociado['Nombre']})"
+                                        else:
+                                            info_cliente = " (🔴 Libre/Sin cliente)"
+                                    
+                                    # Decidir columna de destino
+                                    target_col = col_p1 if i < mitad_puertos else col_p2
+                                    
+                                    with target_col:
+                                        nuevo_val_puerto = st.text_input(
+                                            f"Puerto {i+1}{info_cliente}", 
+                                            value=val_actual_puerto, 
+                                            key=f"puerto_{caja_row_idx}_{i}"
+                                        )
+                                        inputs_puertos.append(nuevo_val_puerto)
+
+                                submit_puertos = st.form_submit_button("💾 Guardar Puertos y Asignar Caja a Clientes", use_container_width=True)
+
+                                if submit_puertos:
+                                    updates_caja = []
+                                    updates_clientes = []
+
+                                    for i in range(num_puertos):
+                                        val_actual = str(caja.get(f"Precinto {i+1}", "")).strip()
+                                        if val_actual in ("nan", "None"): val_actual = ""
+                                        nuevo_val = inputs_puertos[i].strip()
+
+                                        if val_actual != nuevo_val:
+                                            letra = letras_columnas[i]
+                                            updates_caja.append({"range": f"{letra}{caja_row_idx}", "values": [[nuevo_val]]})
+
+                                        if nuevo_val:
+                                            cli_asociado = verificar_precinto_duplicado(df_clientes_raw, nuevo_val)
+                                            if cli_asociado is not None:
+                                                cli_idx = cli_asociado.name + 2
+                                                caja_actual_cli = str(cli_asociado.get("Caja NAP", "")).strip()
+                                                if caja_actual_cli != nro_caja:
+                                                    updates_clientes.append({"range": f"M{cli_idx}", "values": [[nro_caja]]})
+
+                                    for i in range(num_puertos, 16):
+                                        val_actual = str(caja.get(f"Precinto {i+1}", "")).strip()
+                                        if val_actual and val_actual not in ("nan", "None"):
+                                            letra = letras_columnas[i]
+                                            updates_caja.append({"range": f"{letra}{caja_row_idx}", "values": [[""]]})
+
+                                    exito = True
+                                    
+                                    if updates_caja:
+                                        success_c, error_c = _do_batch_update(ws_cajas, updates_caja)
+                                        if not success_c:
+                                            st.error(f"❌ Error al guardar puertos de caja: {error_c}")
+                                            exito = False
+                                    
+                                    if updates_clientes:
+                                        success_cl, error_cl = _do_batch_update(ws_clientes, updates_clientes)
+                                        if not success_cl:
+                                            st.error(f"❌ Error al actualizar cajas en clientes: {error_cl}")
+                                            exito = False
+                                        else:
+                                            st.success(f"✅ Se asignó automáticamente la Caja {nro_caja} a {len(updates_clientes)} cliente(s).")
+
+                                    if exito and (updates_caja or updates_clientes):
+                                        st.cache_data.clear()
+                                        st.success("✅ Actualización completada correctamente.")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    elif not updates_caja and not updates_clientes:
+                                        st.info("ℹ️ No se detectaron cambios en los puertos.")
 
     # =====================================================
     # VISTA TÉCNICO
