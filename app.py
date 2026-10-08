@@ -7,6 +7,7 @@ import time
 from fpdf import FPDF
 import io
 import numpy as np
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # =========================================================
 # COOKIE MANAGER (con fallback seguro)
@@ -101,6 +102,7 @@ WORKSHEET_RECLAMOS = "Reclamos"
 WORKSHEET_CLIENTES = "Clientes"
 WORKSHEET_USUARIOS = "usuarios"
 WORKSHEET_NOVEDADES = "Novedades"
+WORKSHEET_CAJAS = "Cajas"
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -108,9 +110,29 @@ SCOPES = [
 ]
 
 # =========================================================
+# ESCUDOS ANTI-BLOQUEO (TENACITY)
+# =========================================================
+@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=2, max=10))
+def safe_get_all_records(worksheet):
+    return worksheet.get_all_records()
+
+@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=2, max=10))
+def safe_batch_update(worksheet, updates):
+    return worksheet.batch_update(updates)
+
+@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=2, max=10))
+def safe_update_cell(worksheet, row, col, val):
+    return worksheet.update_cell(row, col, val)
+
+@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=2, max=10))
+def safe_append_row(worksheet, row_data):
+    return worksheet.append_row(row_data)
+
+# =========================================================
 # NOMBRES DE COLUMNAS EN HOJA CLIENTES
 # =========================================================
 COL_CLIENTE_PRECINTO = 'N° de Precinto'
+COL_CLIENTE_CAJA = 'Caja NAP'
 COL_CLIENTE_OBS = 'Observaciones'
 COL_CLIENTE_LAT = 'Latitud'
 COL_CLIENTE_LON = 'Longitud'
@@ -138,6 +160,7 @@ def init_google_sheets():
         ws_reclamos = spreadsheet.worksheet(WORKSHEET_RECLAMOS)
         ws_clientes = spreadsheet.worksheet(WORKSHEET_CLIENTES)
         ws_usuarios = spreadsheet.worksheet(WORKSHEET_USUARIOS)
+        ws_cajas = spreadsheet.worksheet(WORKSHEET_CAJAS)
 
         try:
             ws_novedades = spreadsheet.worksheet(WORKSHEET_NOVEDADES)
@@ -145,7 +168,7 @@ def init_google_sheets():
             ws_novedades = spreadsheet.add_worksheet(title=WORKSHEET_NOVEDADES, rows=10, cols=2)
             ws_novedades.update('A1:B1', [['Fecha', 'Mensaje']])
 
-        return ws_reclamos, ws_clientes, ws_usuarios, ws_novedades
+        return ws_reclamos, ws_clientes, ws_usuarios, ws_novedades, ws_cajas
     except Exception as e:
         st.error(f"Error de conexión: {e}")
         st.stop()
@@ -157,12 +180,14 @@ def resolver_col_indices_clientes(ws_clientes):
     if 'clientes_col_idx' in st.session_state:
         return st.session_state['clientes_col_idx']
 
-    result = {'precinto': None, 'obs': None, 'lat': None, 'lon': None}
+    result = {'precinto': None, 'caja': None, 'obs': None, 'lat': None, 'lon': None}
     try:
         headers = ws_clientes.row_values(1)
         headers = [h.strip() for h in headers]
         if COL_CLIENTE_PRECINTO in headers:
             result['precinto'] = headers.index(COL_CLIENTE_PRECINTO) + 1
+        if COL_CLIENTE_CAJA in headers:
+            result['caja'] = headers.index(COL_CLIENTE_CAJA) + 1
         if COL_CLIENTE_OBS in headers:
             result['obs'] = headers.index(COL_CLIENTE_OBS) + 1
         if COL_CLIENTE_LAT in headers:
@@ -176,21 +201,71 @@ def resolver_col_indices_clientes(ws_clientes):
     return result
 
 # =========================================================
-# CARGA DE DATOS
+# FUNCIONES HELPER BIDIRECCIONALES (CLIENTE <-> CAJA)
+# =========================================================
+def verificar_precinto_duplicado(df_clientes, precinto, cliente_id_ignorar=None):
+    if not precinto or pd.isna(precinto) or str(precinto).strip() == "":
+        return None
+    df_filtro = df_clientes[df_clientes["N° de Precinto"].astype(str).str.strip() == str(precinto).strip()]
+    if cliente_id_ignorar:
+        df_filtro = df_filtro[df_filtro["Nº Cliente"].astype(str).str.strip() != str(cliente_id_ignorar).strip()]
+    if not df_filtro.empty:
+        return df_filtro.iloc[0]
+    return None
+
+def _obtener_info_caja(df_cajas, nombre_caja):
+    if df_cajas is None or df_cajas.empty or not nombre_caja or str(nombre_caja).strip() == "":
+        return None
+    caja_data = df_cajas[df_cajas["N De Caja"].astype(str).str.strip() == str(nombre_caja).strip()]
+    if caja_data.empty:
+        return None
+    return caja_data.iloc[0]
+
+def _buscar_puerto_vacio(caja_row):
+    splitter = str(caja_row.get("Splitter", "1/4")).strip()
+    num_puertos = 4
+    if splitter == "1/8": num_puertos = 8
+    elif splitter == "1/16": num_puertos = 16
+    letras = ["I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X"]
+    for i in range(num_puertos):
+        val = str(caja_row.get(f"Precinto {i+1}", "")).strip()
+        if val in ("", "nan", "None"):
+            return letras[i]
+    return None
+
+def _buscar_puerto_ocupado(caja_row, precinto):
+    if not precinto or str(precinto).strip() == "":
+        return None
+    splitter = str(caja_row.get("Splitter", "1/4")).strip()
+    num_puertos = 4
+    if splitter == "1/8": num_puertos = 8
+    elif splitter == "1/16": num_puertos = 16
+    letras = ["I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X"]
+    for i in range(num_puertos):
+        val = str(caja_row.get(f"Precinto {i+1}", "")).strip()
+        if val == str(precinto).strip():
+            return letras[i]
+    return None
+
+# =========================================================
+# CARGA DE DATOS SEGUROS
 # =========================================================
 @st.cache_data(ttl=120)
 def cargar_datos():
-    ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
-    df_reclamos = pd.DataFrame(ws_reclamos.get_all_records())
-    df_clientes = pd.DataFrame(ws_clientes.get_all_records())
-    df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+    ws_reclamos, ws_clientes, ws_usuarios, ws_novedades, ws_cajas = init_google_sheets()
+    
+    # Lecturas blindadas
+    df_reclamos = pd.DataFrame(safe_get_all_records(ws_reclamos))
+    df_clientes = pd.DataFrame(safe_get_all_records(ws_clientes))
+    df_usuarios = pd.DataFrame(safe_get_all_records(ws_usuarios))
+    df_cajas_raw = pd.DataFrame(safe_get_all_records(ws_cajas))
 
     df_reclamos.columns = df_reclamos.columns.str.strip()
     df_clientes.columns = df_clientes.columns.str.strip()
     df_usuarios.columns = df_usuarios.columns.str.strip()
 
     try:
-        df_novedades = pd.DataFrame(ws_novedades.get_all_records())
+        df_novedades = pd.DataFrame(safe_get_all_records(ws_novedades))
         df_novedades.columns = df_novedades.columns.str.strip()
     except:
         df_novedades = pd.DataFrame(columns=['Fecha', 'Mensaje'])
@@ -201,7 +276,8 @@ def cargar_datos():
         'Nº Cliente': 'nro_cliente_cli',
         'Latitud': 'lat',
         'Longitud': 'lon',
-        'N° de Precinto': 'precinto_cliente'
+        'N° de Precinto': 'precinto_cliente',
+        'Caja NAP': 'caja_nap'
     })
     df_c['nro_cliente_cli'] = df_c['nro_cliente_cli'].astype(str)
 
@@ -213,10 +289,9 @@ def cargar_datos():
     if 'precinto_cliente' in df_c.columns:
         df_c['precinto_cliente'] = df_c['precinto_cliente'].replace(['*', '', ' '], np.nan)
 
-    # Buscar agresivamente la columna de Plan (ignora mayúsculas o espacios extra)
     plan_col_name = next((c for c in df_c.columns if 'plan' in str(c).lower()), None)
     
-    cols_cliente = ['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente']
+    cols_cliente = ['nro_cliente_cli', 'lat', 'lon', 'precinto_cliente', 'caja_nap']
     if plan_col_name:
         df_c['Plan_Limpio'] = df_c[plan_col_name].astype(str).replace(['nan', 'None', '', ' ', '*'], np.nan)
         cols_cliente.append('Plan_Limpio')
@@ -237,16 +312,17 @@ def cargar_datos():
     df_r['Tecnico_Limpio'] = df_r['Técnico'].astype(str).str.strip()
     df_r['Tecnico_Limpio'] = df_r['Tecnico_Limpio'].replace('', np.nan)
 
-    return df_r, df_usuarios, df_clientes_raw, df_novedades
+    return df_r, df_usuarios, df_clientes_raw, df_novedades, df_cajas_raw
 
 # =========================================================
 # FUNCIÓN PARA DIBUJAR TARJETAS
 # =========================================================
 def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                        ws_clientes=None, df_clientes_raw=None,
-                       clientes_col_idx=None, modo="en_curso"):
+                       clientes_col_idx=None, modo="en_curso",
+                       ws_cajas=None, df_cajas_raw=None):
     if clientes_col_idx is None:
-        clientes_col_idx = {'precinto': None, 'obs': None, 'lat': None, 'lon': None}
+        clientes_col_idx = {'precinto': None, 'caja': None, 'obs': None, 'lat': None, 'lon': None}
 
     sheet_row_num = row.name + 2
     horas = row['Horas_Transcurridas']
@@ -273,6 +349,10 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
     precinto = ''
     if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '', ' ']:
         precinto = str(row.get('precinto_cliente'))
+        
+    caja_nap = ''
+    if pd.notna(row.get('caja_nap')) and str(row.get('caja_nap')) not in ['nan', 'None', '', ' ']:
+        caja_nap = str(row.get('caja_nap'))
 
     if pd.notna(horas):
         if horas < 1:
@@ -297,6 +377,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
             cliente_fila = cliente_match.index[0] + 2
 
     col_precinto_idx = clientes_col_idx.get('precinto')
+    col_caja_idx = clientes_col_idx.get('caja')
     col_lat_idx = clientes_col_idx.get('lat')
     col_lon_idx = clientes_col_idx.get('lon')
     col_obs_idx = clientes_col_idx.get('obs')
@@ -332,6 +413,11 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
             loc_parts.append(f"🔒{precinto}")
         else:
             loc_parts.append("🔒<i style='color:#888;'>Sin precinto</i>")
+            
+        if caja_nap:
+            loc_parts.append(f"📦{caja_nap}")
+        else:
+            loc_parts.append("📦<i style='color:#888;'>Sin caja</i>")
 
         if tiene_ubicacion and maps_url:
             loc_parts.append(f"<a href='{maps_url}' target='_blank' style='color:#00a8ff;text-decoration:none;'>📍Maps</a>")
@@ -344,32 +430,86 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
             st.caption(f"📝 {detalles}")
 
         if es_admin and cliente_fila is not None:
-            with st.expander("✏️ Editar precinto / ubicación"):
+            with st.expander("✏️ Editar Precinto / Caja / Coordenadas"):
                 col_edit1, col_edit2 = st.columns(2)
 
                 with col_edit1:
-                    current_p = precinto if precinto else ""
-                    with st.form(f"form_precinto_edit_{nro_cliente}_{sheet_row_num}"):
-                        new_precinto = st.text_input(
-                            "Precinto", value=current_p,
-                            key=f"pint_edit_{nro_cliente}_{sheet_row_num}"
-                        )
-                        submit_p = st.form_submit_button("💾 Guardar")
-                        if submit_p:
-                            try:
-                                if col_precinto_idx:
-                                    cell = gspread.utils.rowcol_to_a1(cliente_fila, col_precinto_idx)
-                                    ws_clientes.batch_update([{"range": cell, "values": [[new_precinto.strip()]]}])
-                                    st.cache_data.clear()
-                                    st.success("✅ Precinto actualizado")
-                                    time.sleep(0.8)
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Columna de precinto no encontrada en hoja")
-                            except Exception as e:
-                                st.error(f"❌ {e}")
+                    # ----- FORMULARIO DE PRECINTO Y CAJA (CON LOGICA BIDIRECCIONAL BLINDADA) -----
+                    caja_actual = caja_nap.strip()
+                    opciones_cajas = [""]
+                    if df_cajas_raw is not None and not df_cajas_raw.empty:
+                        cajas_validas = [str(c).strip() for c in df_cajas_raw["N De Caja"].dropna().tolist() if str(c).strip() not in ("", "nan", "None")]
+                        opciones_cajas.extend(sorted(list(set(cajas_validas))))
+                        
+                    if caja_actual and caja_actual not in opciones_cajas:
+                        opciones_cajas.append(caja_actual)
+                        
+                    try:
+                        caja_idx = opciones_cajas.index(caja_actual)
+                    except:
+                        caja_idx = 0
+
+                    with st.form(f"form_datos_edit_{nro_cliente}_{sheet_row_num}"):
+                        new_precinto = st.text_input("Precinto", value=precinto if precinto else "")
+                        new_caja = st.selectbox("Caja NAP", options=opciones_cajas, index=caja_idx)
+                        
+                        submit_datos = st.form_submit_button("💾 Guardar Datos")
+                        if submit_datos:
+                            precinto_limpio = new_precinto.strip()
+                            caja_limpia = new_caja.strip()
+                            
+                            duplicado = verificar_precinto_duplicado(df_clientes_raw, precinto_limpio, nro_cliente)
+                            if duplicado is not None:
+                                st.error(f"❌ El precinto '{precinto_limpio}' ya está usado por el cliente: {duplicado['Nº Cliente']} - {duplicado['Nombre']}")
+                            else:
+                                updates_caja = []
+                                caja_llena_error = False
+
+                                if (caja_actual != caja_limpia) or (precinto != precinto_limpio):
+                                    # 1. Quitar precinto viejo de la caja vieja
+                                    if caja_actual and precinto:
+                                        c_row_v = _obtener_info_caja(df_cajas_raw, caja_actual)
+                                        if c_row_v is not None:
+                                            p_ocup = _buscar_puerto_ocupado(c_row_v, precinto)
+                                            if p_ocup:
+                                                updates_caja.append({"range": f"{p_ocup}{c_row_v.name + 2}", "values": [[""]]})
+                                    
+                                    # 2. Agregar precinto nuevo a la caja nueva
+                                    if caja_limpia and precinto_limpio:
+                                        c_row_n = _obtener_info_caja(df_cajas_raw, caja_limpia)
+                                        if c_row_n is not None:
+                                            p_vac = _buscar_puerto_vacio(c_row_n)
+                                            if p_vac:
+                                                updates_caja.append({"range": f"{p_vac}{c_row_n.name + 2}", "values": [[precinto_limpio]]})
+                                            else:
+                                                caja_llena_error = True
+                                                st.error(f"❌ La Caja NAP '{caja_limpia}' ya está llena.")
+
+                                if not caja_llena_error:
+                                    updates_clientes = []
+                                    if col_precinto_idx and (precinto != precinto_limpio):
+                                        updates_clientes.append({"range": gspread.utils.rowcol_to_a1(cliente_fila, col_precinto_idx), "values": [[precinto_limpio]]})
+                                    if col_caja_idx and (caja_actual != caja_limpia):
+                                        updates_clientes.append({"range": gspread.utils.rowcol_to_a1(cliente_fila, col_caja_idx), "values": [[caja_limpia]]})
+                                    
+                                    try:
+                                        if updates_clientes:
+                                            safe_batch_update(ws_clientes, updates_clientes)
+                                        if updates_caja and ws_cajas is not None:
+                                            safe_batch_update(ws_cajas, updates_caja)
+                                            
+                                        if updates_clientes or updates_caja:
+                                            st.cache_data.clear()
+                                            st.success("✅ Datos y Red actualizados")
+                                            time.sleep(1)
+                                            st.rerun()
+                                        else:
+                                            st.info("ℹ️ No hay cambios para guardar.")
+                                    except Exception as e:
+                                        st.error(f"❌ {e}")
 
                 with col_edit2:
+                    # ----- FORMULARIO DE COORDENADAS -----
                     lat_val = ""
                     lon_val = ""
                     if tiene_ubicacion:
@@ -392,7 +532,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                             placeholder="-59.xxxxxx",
                             key=f"ln_edit_{nro_cliente}_{sheet_row_num}"
                         )
-                        submit_g = st.form_submit_button("💾 Guardar")
+                        submit_g = st.form_submit_button("💾 Guardar Ubicación")
                         if submit_g:
                             if not new_lat.strip() or not new_lon.strip():
                                 st.error("❌ Completá ambos campos")
@@ -405,7 +545,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                                             {"range": gspread.utils.rowcol_to_a1(cliente_fila, col_lat_idx), "values": [[new_lat.strip()]]},
                                             {"range": gspread.utils.rowcol_to_a1(cliente_fila, col_lon_idx), "values": [[new_lon.strip()]]}
                                         ]
-                                        ws_clientes.batch_update(updates)
+                                        safe_batch_update(ws_clientes, updates)
                                         st.cache_data.clear()
                                         st.success("✅ Coordenadas actualizadas")
                                         time.sleep(0.8)
@@ -428,7 +568,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                 if submit_verify:
                     try:
                         col_idx = df_reclamos.columns.get_loc('Estado') + 1
-                        ws_reclamos.update_cell(sheet_row_num, col_idx, "Verificado")
+                        safe_update_cell(ws_reclamos, sheet_row_num, col_idx, "Verificado")
 
                         if obs.strip() and cliente_fila is not None and col_obs_idx:
                             tz_arg = timezone(timedelta(hours=-3))
@@ -436,9 +576,10 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                             fecha_obs = f"{ahora.day}/{ahora.month}/{ahora.year}"
                             obs_text = f"{fecha_obs}: {obs.strip().upper()}"
 
-                            current_val = ws_clientes.cell(cliente_fila, col_obs_idx).value or ""
-                            new_val = (current_val.strip() + "\n" + obs_text) if current_val.strip() else obs_text
-                            ws_clientes.update_cell(cliente_fila, col_obs_idx, new_val)
+                            # Nota: update_cell no está cacheado para lectura, pero read es barato. Lo envolvemos igual.
+                            current_val = safe_get_all_records(ws_clientes)[cliente_fila-2].get(COL_CLIENTE_OBS, "")
+                            new_val = (str(current_val).strip() + "\n" + obs_text) if str(current_val).strip() else obs_text
+                            safe_update_cell(ws_clientes, cliente_fila, col_obs_idx, new_val)
 
                         st.cache_data.clear()
                         st.success("¡Verificado!")
@@ -468,7 +609,7 @@ def renderizar_tarjeta(row, df_reclamos, ws_reclamos, es_admin=False,
                                 {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_estado), "values": [["En curso"]]},
                                 {"range": gspread.utils.rowcol_to_a1(sheet_row_num, col_tecnico), "values": [[tecnicos_str]]}
                             ]
-                            ws_reclamos.batch_update(updates)
+                            safe_batch_update(ws_reclamos, updates)
 
                             mensaje_whatsapp = generar_mensaje_asignacion(row, tecnicos_str)
                             st.session_state["mensaje_para_copiar"] = mensaje_whatsapp
@@ -716,7 +857,7 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     nro_cliente = str(row.get('Nº Cliente', ''))
     direccion = str(row.get('Dirección', 'Sin dirección'))
     telefono = str(row.get('Teléfono', 'Sin teléfono'))
-    plan = str(row.get('Plan_Limpio', '')) # Usamos la nueva columna procesada
+    plan = str(row.get('Plan_Limpio', '')) 
     tipo_reclamo = str(row.get('Tipo de reclamo', ''))
     detalles = str(row.get('Detalles', ''))
     sector = str(row.get('Sector', ''))
@@ -727,6 +868,8 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     precinto = ''
     if pd.notna(row.get('precinto_cliente')) and str(row.get('precinto_cliente')) not in ['nan', '*', '']:
         precinto = str(row.get('precinto_cliente'))
+        
+    caja_nap = str(row.get('caja_nap', '')).replace('nan', '').strip()
 
     sep = "------------------------------------------------"
 
@@ -741,7 +884,6 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
     if telefono and telefono != 'Sin teléfono':
         msg += f"📞 *TEL:* {telefono}\n"
         
-    # <-- Aquí insertamos el plan justo debajo de teléfono y arriba de precinto
     if plan and plan.lower() not in ['nan', 'none', '', '*', ' ']:
         msg += f"📄 *PLAN:* {plan}\n"
         
@@ -749,6 +891,9 @@ def generar_mensaje_asignacion(row, tecnicos_asignados):
         msg += f"🔒 *PRECINTO:* {precinto}\n"
     else:
         msg += f"🔒 *PRECINTO:* No cuenta con número de precinto\n"
+        
+    if caja_nap and caja_nap.lower() != 'none':
+        msg += f"📦 *CAJA NAP:* {caja_nap}\n"
         
     msg += sep + "\n"
     msg += f"⚙️ *RECLAMO:* {tipo_reclamo}\n"
@@ -780,8 +925,8 @@ def login_screen():
 
         if submit:
             try:
-                ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
-                df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+                ws_reclamos, ws_clientes, ws_usuarios, ws_novedades, ws_cajas = init_google_sheets()
+                df_usuarios = pd.DataFrame(safe_get_all_records(ws_usuarios))
 
                 user_row = df_usuarios[(df_usuarios['username'] == username) & (df_usuarios['password'] == password)]
 
@@ -828,8 +973,8 @@ def main_app():
 
     st.divider()
 
-    df_reclamos, _, df_clientes_raw, df_novedades = cargar_datos()
-    ws_reclamos, ws_clientes, _, ws_novedades = init_google_sheets()
+    df_reclamos, _, df_clientes_raw, df_novedades, df_cajas_raw = cargar_datos()
+    ws_reclamos, ws_clientes, _, ws_novedades, ws_cajas = init_google_sheets()
 
     # ═══════════════════════════════════════════════════════
     # RESOLVER ÍNDICES DE COLUMNAS UNA SOLA VEZ (sin API por tarjeta)
@@ -908,7 +1053,7 @@ def main_app():
                                 sheet_row_num = i + 2
                                 cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
                                 updates.append({"range": cell_range, "values": [["Resuelto"]]})
-                            ws_reclamos.batch_update(updates)
+                            safe_batch_update(ws_reclamos, updates)
                             st.cache_data.clear()
                             st.success(f"¡{len(updates)} reclamos cerrados como Resuelto!")
                             time.sleep(2)
@@ -931,7 +1076,7 @@ def main_app():
                                 sheet_row_num = i + 2
                                 cell_range = gspread.utils.rowcol_to_a1(sheet_row_num, col_idx)
                                 updates.append({"range": cell_range, "values": [["Pendiente"]]})
-                            ws_reclamos.batch_update(updates)
+                            safe_batch_update(ws_reclamos, updates)
                             st.cache_data.clear()
                             st.success(f"¡{len(updates)} reclamos pasados a Pendiente!")
                             time.sleep(2)
@@ -1003,7 +1148,7 @@ def main_app():
                             tz_arg = timezone(timedelta(hours=-3))
                             ahora = datetime.now(tz_arg)
                             fecha_str = f"{ahora.day}/{ahora.month}/{ahora.year}"
-                            ws_novedades.append_row([fecha_str, nueva_novedad.strip()])
+                            safe_append_row(ws_novedades, [fecha_str, nueva_novedad.strip()])
                             st.cache_data.clear()
                             st.success("✅ Novedad publicada.")
                             time.sleep(1)
@@ -1084,7 +1229,8 @@ def main_app():
                                 es_admin=True, ws_clientes=ws_clientes,
                                 df_clientes_raw=df_clientes_raw,
                                 clientes_col_idx=clientes_col_idx,
-                                modo="en_curso"
+                                modo="en_curso",
+                                ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
                             )
             else:
                 en_curso = len(df_filtrado)
@@ -1101,7 +1247,8 @@ def main_app():
                         es_admin=True, ws_clientes=ws_clientes,
                         df_clientes_raw=df_clientes_raw,
                         clientes_col_idx=clientes_col_idx,
-                        modo="en_curso"
+                        modo="en_curso",
+                        ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
                     )
         else:
             st.info("ℹ️ No hay reclamos En curso con técnico asignado.")
@@ -1129,7 +1276,8 @@ def main_app():
                         es_admin=True, ws_clientes=ws_clientes,
                         df_clientes_raw=df_clientes_raw,
                         clientes_col_idx=clientes_col_idx,
-                        modo="pendiente"
+                        modo="pendiente",
+                        ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
                     )
         else:
             st.success("🎉 No hay reclamos Pendientes.")
@@ -1192,7 +1340,8 @@ def main_app():
                 es_admin=False, ws_clientes=ws_clientes,
                 df_clientes_raw=df_clientes_raw,
                 clientes_col_idx=clientes_col_idx,
-                modo="en_curso"
+                modo="en_curso",
+                ws_cajas=ws_cajas, df_cajas_raw=df_cajas_raw
             )
 
 # =========================================================
@@ -1205,8 +1354,8 @@ if not st.session_state.authenticated:
     saved_user = load_cookie("fusion_user")
     if saved_user:
         try:
-            ws_reclamos, ws_clientes, ws_usuarios, ws_novedades = init_google_sheets()
-            df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+            ws_reclamos, ws_clientes, ws_usuarios, ws_novedades, ws_cajas = init_google_sheets()
+            df_usuarios = pd.DataFrame(safe_get_all_records(ws_usuarios))
             df_usuarios.columns = df_usuarios.columns.str.strip()
 
             user_row = df_usuarios[df_usuarios['username'] == saved_user]
