@@ -116,7 +116,7 @@ TECNICOS_DISPONIBLES = [
 ]
 SECTORES_DISPONIBLES = [str(n) for n in range(1, 18)]
 SPLITTERS_DISPONIBLES = ["1/4", "1/8", "1/16"]
-MARCAS_EQUIPO = ["Huawei", "VSol"]
+MARCAS_EQUIPO = ["Huawei", "VSol 1", "VSol 2", "VSol 3"]
 
 # =========================================================
 # ESCUDOS ANTI-BLOQUEO (TENACITY)
@@ -1473,12 +1473,21 @@ def main_app():
 
                                 with edit_ccol2:
                                     marca_actual = str(caja.get("Marca Equipo", "Huawei")).strip()
+                                    
+                                    # Adaptación: copiamos la lista para no afectar la original
+                                    opciones_marcas_edit = MARCAS_EQUIPO.copy()
+                                    
+                                    # Si la caja vieja dice solo "VSol" u otra que no esté, la agregamos temporalmente a las opciones
+                                    if marca_actual and marca_actual not in opciones_marcas_edit:
+                                        opciones_marcas_edit.append(marca_actual)
+                                        
                                     try:
-                                        marca_idx = MARCAS_EQUIPO.index(marca_actual) if marca_actual in MARCAS_EQUIPO else 0
+                                        marca_idx = opciones_marcas_edit.index(marca_actual)
                                     except ValueError:
                                         marca_idx = 0
+                                        
                                     edit_marca = st.selectbox(
-                                        "🏷️ Marca Equipo", options=MARCAS_EQUIPO, index=marca_idx, key=f"caja_marca_{caja_row_idx}"
+                                        "🏷️ Marca Equipo", options=opciones_marcas_edit, index=marca_idx, key=f"caja_marca_{caja_row_idx}"
                                     )
 
                                     splitter_actual = str(caja.get("Splitter", "")).strip()
